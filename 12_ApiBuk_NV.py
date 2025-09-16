@@ -531,7 +531,7 @@ def main():
                 "GRIP Position": grip_position,
                 "SPS_Eligibility": sps_elig,
                 "Date SPS_Eligibility": date_sps_elig,
-                "Total Target Cash": date_total_target_cash,
+                "Total Target Cash": total_target_cash,
                 "Date Total Target Cash": date_total_target_cash,
                 "Private E-mail Address": private_email,
                 "Private Mobile Phone Number": private_mobile,
