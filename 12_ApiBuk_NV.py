@@ -466,12 +466,14 @@ def main():
             if base_wage_val is None and isinstance(job, dict):
                 base_wage_val = job.get("base_wage")
             if base_wage_val is None:
-                base_salary = get_from_attrs(emp, ["Base Salary","Salary Base","Sueldo Base","Base Pay"], prefer_job=True)
+                base_salary_raw = get_from_attrs(
+                    emp,
+                    ["Base Salary","Salary Base","Sueldo Base","Base Pay"],
+                    prefer_job=True,
+                )
             else:
-                if isinstance(base_wage_val, str):
-                    base_salary = base_wage_val.strip()
-                else:
-                    base_salary = str(base_wage_val)
+                base_salary_raw = base_wage_val
+            base_salary = format_decimal_two_places(base_salary_raw)
             date_base_salary = get_from_attrs(emp, ["Date Base Salary","Base Salary Date"], prefer_job=True, date=True)
 
             fixed_allowances = get_from_attrs(emp, ["Fixed Allowances"], prefer_job=True)
