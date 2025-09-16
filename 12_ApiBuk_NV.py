@@ -428,7 +428,16 @@ def main():
                 get_from_attrs(emp, ["Private Mobile Phone Number","Private Phone","Mobile personal","Celular personal"], prefer_job=False)
                 or emp.get("personal_mobile") or emp.get("private_mobile") or emp.get("mobile") or emp.get("cellphone") or emp.get("phone") or ""
             )
-            base_salary = get_from_attrs(emp, ["Base Salary","Salary Base","Sueldo Base","Base Pay"], prefer_job=True)
+            base_wage_val = emp.get("base_wage")
+            if base_wage_val is None and isinstance(job, dict):
+                base_wage_val = job.get("base_wage")
+            if base_wage_val is None:
+                base_salary = get_from_attrs(emp, ["Base Salary","Salary Base","Sueldo Base","Base Pay"], prefer_job=True)
+            else:
+                if isinstance(base_wage_val, str):
+                    base_salary = base_wage_val.strip()
+                else:
+                    base_salary = str(base_wage_val)
             date_base_salary = get_from_attrs(emp, ["Date Base Salary","Base Salary Date"], prefer_job=True, date=True)
 
             fixed_allowances = get_from_attrs(emp, ["Fixed Allowances"], prefer_job=True)
