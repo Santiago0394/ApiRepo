@@ -394,7 +394,30 @@ def main():
             grip_position = get_from_attrs(emp, ["GRIP Position"], prefer_job=True)
             sps_elig = get_from_attrs(emp, ["SPS_Eligibility"], prefer_job=True)
             date_sps_elig = get_from_attrs(emp, ["Date SPS_Eligibility"], prefer_job=True, date=True)
-            total_target_cash = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
+            total_target_cash_raw = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
+            total_target_cash = ""
+            if total_target_cash_raw not in ("", None):
+                s_raw = str(total_target_cash_raw).strip()
+                s = s_raw.replace(" ", "")
+                if "," in s and "." in s:
+                    if s.rfind(",") > s.rfind("."):
+                        s = s.replace(".", "")
+                        s = s.replace(",", ".")
+                    else:
+                        s = s.replace(",", "")
+                elif "," in s:
+                    if s.count(",") == 1 and len(s.split(",")[-1]) <= 2:
+                        s = s.replace(",", ".")
+                    else:
+                        s = s.replace(",", "")
+                s = re.sub(r"[^\d.\-]", "", s)
+                if s not in ("", ".", "-", "-.", ".-"):
+                    try:
+                        total_target_cash = f"{Decimal(s):.2f}"
+                    except Exception:
+                        total_target_cash = s_raw
+                else:
+                    total_target_cash = ""
             date_total_target_cash = get_from_attrs(emp, ["Date Total Target Cash"], prefer_job=True, date=True)
 
             private_email = (
