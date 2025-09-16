@@ -171,6 +171,40 @@ def map_contract_type_code(value) -> str:
     if "fijo" in s or "plazo" in s or "temporal" in s or "fixed" in s or "term" in s or s == "t":
         return "T"
     return ""
+    
+
+def format_decimal_two_places(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        value = 1 if value else 0
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return f"{Decimal(str(value)):.2f}"
+        except Exception:
+            return str(value)
+    s = str(value).strip()
+    if not s:
+        return ""
+    s_norm = s.replace(" ", "")
+    if "," in s_norm and "." in s_norm:
+        if s_norm.rfind(",") > s_norm.rfind("."):
+            s_norm = s_norm.replace(".", "")
+            s_norm = s_norm.replace(",", ".")
+        else:
+            s_norm = s_norm.replace(",", "")
+    elif "," in s_norm:
+        if s_norm.count(",") == 1 and len(s_norm.split(",")[-1]) <= 2:
+            s_norm = s_norm.replace(",", ".")
+        else:
+            s_norm = s_norm.replace(",", "")
+    s_clean = re.sub(r"[^\d.\-]", "", s_norm)
+    if s_clean in ("", ".", "-", "-.", ".-"):
+        return s
+    try:
+        return f"{Decimal(s_clean):.2f}"
+    except Exception:
+        return s
 
 # -------- Columnas de salida --------
 COLS = [
