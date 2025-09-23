@@ -76,6 +76,9 @@ COUNTRY_OF_BIRTH_MAP = {
     "TR": "TUR",
     "UA": "UKR",
     "VE": "VEN",
+    "CU": "CUB",
+    "HR": "HRV",
+    "GB": "GBR",
 }
 
 def split_prefix_suffix(surname_full):
@@ -120,7 +123,7 @@ def _norm_country(value: str) -> str:
     if len(v) == 2 and v.isalpha(): return v
     return v[:2]
 
-    def map_country_of_birth(value) -> str:
+def map_country_of_birth(value) -> str:
     if not value:
         return ""
     code = str(value).strip().upper()
