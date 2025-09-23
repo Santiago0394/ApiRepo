@@ -99,8 +99,8 @@ def split_prefix_suffix(surname_full):
 def map_gender(val):
     if not val: return ""
     v = str(val).strip().lower()
-    if v in ("m","male","masculino","hombre"): return 1
-    if v in ("f","female","femenino","mujer"): return 2
+    if v in ("m","male","masculino","hombre"): return "Sr."
+    if v in ("f","female","femenino","mujer"): return "Sra."
     return ""
 
 def to_yyyymmdd(val):
@@ -478,7 +478,7 @@ def main():
                 s_clean = s.replace(",", ".")
                 s_num = re.sub(r"[^0-9.\-]", "", s_clean)
                 try:
-                    val = Decimal(s_num) if s_num not in ("", ".", "-") else None
+                    val = Decimal(s_num) if s_num not in ("", ".", "-", "-.", ".-") else None
                 except Exception:
                     val = None
                 if val is not None and val == 0:
@@ -617,10 +617,10 @@ def main():
             #    pass
 
             # --- Nuevos campos ---
-            country_of_birth = map_country_of_birth(emp.get("country_code"))
+            country_of_birth = emp.get("country_code") or ""
             salutation = get_from_attrs(emp, ["Salutation", "Tratamiento", "Título de saludo"], prefer_job=False) or ""
             line_manager = get_from_attrs(emp, ["Line Manager", "Manager Name", "Jefe directo", "Supervisor"], prefer_job=True) or ""
-            successfactors_id = emp.get("person_id") or emp.get("SuccessFactors ID") or ""
+            successfactors_id = ca.get("Codigo SF") or ca.get("CodigoSF") or ca.get("SuccessFactors ID", "")
 
             # >>> Fila
             row = normalize_row_text({
