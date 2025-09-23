@@ -205,6 +205,41 @@ def format_decimal_two_places(value) -> str:
         return f"{Decimal(s_clean):.2f}"
     except Exception:
         return s
+# -------- Fecha Null a 99991231 --------
+def handle_null_date(value, default="99991231"):
+    """Convierte null/None a fecha por defecto"""
+    if value is None or value == "":
+        return default
+    return to_yyyymmdd(value) or default
+
+# -------- Mapeo contract_type a código numérico --------
+
+def map_contract_type_status(contract_type_raw):
+    """Mapea el tipo de contrato a código numérico"""
+    if not contract_type_raw:
+        return ""
+    
+    contract_type_clean = str(contract_type_raw).strip().lower()
+    
+    if contract_type_clean == "indefinido":
+        return "1"
+    elif contract_type_clean == "fijo":
+        return "2"
+    else:
+        return ""
+
+# -------- Mapeo Management Group a Employee Category --------    
+def map_employee_category(mgmt_group_value):
+    """Mapea Management Group a Employee Category"""
+    if not mgmt_group_value:
+        return ""
+    
+    mgmt_group_clean = str(mgmt_group_value).strip().upper()
+    
+    if mgmt_group_clean == "O":
+        return "Individual Contributor"
+    else:
+        return "Management"
 
 # -------- Columnas de salida --------
 COLS = [
@@ -301,7 +336,9 @@ def main():
             # Contratos / horas
             contract_type_raw = ( get_from_attrs(emp, ["Contract Type","Tipo de contrato"], prefer_job=True)
                                   or str(job.get("contract_type") or "").strip() )
+            
             contract_type_code = map_contract_type_code(contract_type_raw)
+
             contract_status = ( get_from_attrs(emp, ["Contract Status","Estado de contrato"], prefer_job=True)
                                 or find_any(emp, ["Contract Status","Estado de contrato"]) )
             contractual_weekly = ( get_from_attrs(emp, ["Contractual Weekly Working","Weekly Hours","Standard Work Week"], prefer_job=True)
@@ -490,17 +527,15 @@ def main():
             account_number = get_from_attrs(emp, ["Account Number"], prefer_job=False) or emp.get("account_number","")
             iban = get_from_attrs(emp, ["International Bank Account Number","IBAN"], prefer_job=True)
             payroll_area = get_from_attrs(emp, ["Payroll Area"], prefer_job=True)
-            termination_date = to_yyyymmdd(emp.get("active_until"))
+            termination_date = handle_null_date(emp.get("current_job", {}).get("end_date"))
 
             last_date_worked = get_from_attrs(emp, ["Last Date Worked"], prefer_job=True, date=True)
             position = get_from_attrs(emp, ["Position"], prefer_job=True)
             legal_entity = get_from_attrs(emp, ["Legal Entity"], prefer_job=True)
 
             # ← NUEVAS
-            employee_group = ( find_any(emp, ["Employee Group","Grupo de empleados","EE Group","Group"])
-                               or get_from_attrs(emp, ["Employee Group"], prefer_job=True) )
-            employee_category = ( find_any(emp, ["Employee Category","Categoría de empleados","Emp Category","Category"])
-                                  or get_from_attrs(emp, ["Employee Category"], prefer_job=True) )
+            employee_group = map_contract_type_status(contract_type_raw)
+            employee_category = map_employee_category(mgmt_group)
             time_mgmt_status = ( find_any(emp, ["Time Management Status","Time Mgmt Status","Estado de gestión de tiempo"])
                                  or get_from_attrs(emp, ["Time Management Status"], prefer_job=True) )
             employee_subgroup = str(job_ca.get("Employee Subgroup") or ca.get("Employee Subgroup") or "").strip()
