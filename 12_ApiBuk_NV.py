@@ -24,6 +24,60 @@ OUT_CSV_SEMI = os.path.join(BASE_DIR, "reporte_generado_apibuk.csv")
 PREFIXES = ["de la","de los","de las","del","de","van","von","da","di","do"]
 SUFFIXES = {"jr","sr","iii","iv","v"}
 
+COUNTRY_OF_BIRTH_MAP = {
+    "DE": "DEU",
+    "AR": "ARG",
+    "AU": "AUS",
+    "AT": "AUT",
+    "BS": "BHS",
+    "BRB": "BRB",
+    "BZ": "BLZ",
+    "BO": "BOL",
+    "BR": "BRA",
+    "CL": "CHL",
+    "CN": "CHN",
+    "CO": "COL",
+    "CR": "CRI",
+    "DOM": "DOM",
+    "EC": "ECU",
+    "ES": "ESP",
+    "US": "USA",
+    "FR": "FRA",
+    "GRC": "GRC",
+    "GT": "GTM",
+    "GY": "GUY",
+    "HT": "HTI",
+    "NL": "NLD",
+    "HN": "HND",
+    "EN": "IND",
+    "IDN": "IDN",
+    "ISR": "ISR",
+    "IT": "ITA",
+    "JM": "JAM",
+    "JP": "JPN",
+    "LV": "LVA",
+    "MLT": "MLT",
+    "MX": "MEX",
+    "NI": "NIC",
+    "NO": "NOR",
+    "NZL": "NZL",
+    "PAM": "PAN",
+    "PY": "PRY",
+    "PE": "PER",
+    "PL": "POL",
+    "PT": "PRT",
+    "PR": "PRI",
+    "RO": "ROU",
+    "RU": "RUS",
+    "SV": "SLV",
+    "SE": "SWE",
+    "CH": "CHE",
+    "SR": "SUR",
+    "TR": "TUR",
+    "UA": "UKR",
+    "VE": "VEN",
+}
+
 def split_prefix_suffix(surname_full):
     s = (surname_full or "").strip()
     if not s: return "",""
@@ -65,6 +119,12 @@ def _norm_country(value: str) -> str:
         return "CL"
     if len(v) == 2 and v.isalpha(): return v
     return v[:2]
+
+    def map_country_of_birth(value) -> str:
+    if not value:
+        return ""
+    code = str(value).strip().upper()
+    return COUNTRY_OF_BIRTH_MAP.get(code, code)
 
 def nationality_codes(emp, ca):
     nats = emp.get("nationalities")
@@ -554,7 +614,7 @@ def main():
             #    pass
 
             # --- Nuevos campos ---
-            country_of_birth = emp.get("country_code") or ""
+            country_of_birth = map_country_of_birth(emp.get("country_code"))
             salutation = get_from_attrs(emp, ["Salutation", "Tratamiento", "Título de saludo"], prefer_job=False) or ""
             line_manager = get_from_attrs(emp, ["Line Manager", "Manager Name", "Jefe directo", "Supervisor"], prefer_job=True) or ""
             successfactors_id = emp.get("person_id") or emp.get("SuccessFactors ID") or ""
