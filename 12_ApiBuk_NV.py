@@ -543,15 +543,15 @@ def main():
             pay_scale_area    = str(job_ca.get("Pay Scale Area")     or ca.get("Pay Scale Area")     or "").strip()
             pay_scale_group = get_from_attrs(emp, ["Pay Scale Group", "Grupo de escala salarial"], prefer_job=True) or ""
 
-            standard_weekly_hours = (
-                get_from_attrs(emp, ["Standard Weekly Hours", "Standard Work Week", "Contractual Weekly Working"], prefer_job=True)
-                or str(job.get("weekly_hours") or "")
-            )
-            try:
-                if standard_weekly_hours:
-                    standard_weekly_hours = f"{float(str(standard_weekly_hours).replace(',','.')):.2f}"
-            except Exception:
-                pass
+            #standard_weekly_hours = (
+               # get_from_attrs(emp, ["Standard Weekly Hours", "Standard Work Week", "Contractual Weekly Working"], prefer_job=True)
+              #  or str(job.get("weekly_hours") or "")
+            #)
+            #try:
+             #   if standard_weekly_hours:
+             #       standard_weekly_hours = f"{float(str(standard_weekly_hours).replace(',','.')):.2f}"
+            #except Exception:
+            #    pass
 
             # --- Nuevos campos ---
             country_of_birth = emp.get("country_code") or ""
@@ -665,7 +665,7 @@ def main():
                 "Pay Scale Area": pay_scale_area,
                 "Pay Scale Group": pay_scale_group,
                 "Contract Type": contract_type_code,
-                "Standard Weekly Hours": standard_weekly_hours,
+                #"Standard Weekly Hours": standard_weekly_hours,
                 "Country of Birth": country_of_birth,
                 "Salutation": salutation,
                 "Preferred Name": first_name_first,
