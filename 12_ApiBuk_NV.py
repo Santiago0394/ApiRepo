@@ -212,40 +212,80 @@ def map_country_of_birth(value) -> str:
 
 def fetch_closed_process_period(session: requests.Session):
     """Obtiene el último periodo de proceso con estado "cerrado"."""
+
+    def _extract_periods(payload):
+        collected = []
+
+        def _walk(node):
+            if isinstance(node, list):
+                for item in node:
+                    if isinstance(item, dict):
+                        collected.append(item)
+            elif isinstance(node, dict):
+                for key in ("data", "items", "results", "process_periods"):
+                    if key in node:
+                        _walk(node[key])
+
+        _walk(payload)
+        return collected
+
     url = f"{BASE}/process_periods"
-    try:
-        response = session.get(url, timeout=TIMEOUT)
-    except requests.RequestException as exc:
-        print(f"⚠️ No se pudo obtener el periodo cerrado: {exc}")
-        return None
-
-    if response.status_code != 200:
-        print(
-            f"⚠️ No se pudo obtener el periodo cerrado: estado HTTP {response.status_code}"
-        )
-        return None
-
-    payload = response.json()
-    periods = payload.get("data", payload)
-    if not isinstance(periods, list):
-        return None
-
+    page = 1
+    seen_ids = set()
     closed_periods = []
-    for period in periods:
-        status = str(period.get("status", "")).strip().lower()
-        if status != "cerrado":
-            continue
 
-        start = to_yyyymmdd(period.get("start_date"))
-        end = to_yyyymmdd(period.get("end_date"))
-        if start and end:
-            closed_periods.append((start, end, period))
+    while True:
+        page_url = f"{url}?page_size={PAGE_SIZE}&page={page}"
+        try:
+            response = session.get(page_url, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            print(f"⚠️ No se pudo obtener el periodo cerrado: {exc}")
+            break
+
+        if response.status_code != 200:
+            print(
+                f"⚠️ No se pudo obtener el periodo cerrado: estado HTTP {response.status_code}"
+            )
+            break
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            print(f"⚠️ Respuesta inválida al obtener periodos: {exc}")
+            break
+
+        periods = _extract_periods(payload) or []
+        if not periods:
+            break
+
+        new_data = False
+        for period in periods:
+            period_id = period.get("id")
+            if period_id is not None and period_id in seen_ids:
+                continue
+            if period_id is not None:
+                seen_ids.add(period_id)
+            new_data = True
+            status = str(period.get("status", "")).strip().lower()
+            if status != "cerrado":
+                continue
+
+            start = to_yyyymmdd(period.get("start_date"))
+            end = to_yyyymmdd(period.get("end_date"))
+            if start and end:
+                closed_periods.append((start, end, period))
+
+        if not new_data:
+            break
+
+
+        page += 1
 
     if not closed_periods:
         return None
 
-    # Seleccionar el periodo cerrado más reciente (mayor fecha de inicio)
-    closed_periods.sort(key=lambda item: item[0], reverse=True)
+    # Seleccionar el periodo cerrado más reciente
+    closed_periods.sort(key=lambda item: (item[1], item[0]), reverse=True)
     start, end, raw_period = closed_periods[0]
     return {"start": start, "end": end, "raw": raw_period}
 
