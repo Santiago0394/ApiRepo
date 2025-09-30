@@ -100,6 +100,36 @@ BANK_CODE_MAP = {
     "Consorcio": "55"
 }
 
+def fetch_latest_open_period(session) -> tuple[str, str]:
+    """
+    Devuelve (start_yyyymmdd, end_yyyymmdd) del período 'abierto' más reciente.
+    Si no hay 'abierto', retorna ("","").
+    """
+    url = f"{BASE}/process_periods"
+    try:
+        r = session.get(url, timeout=TIMEOUT)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"⚠️ No se pudo obtener process_periods (abierto): {e}")
+        return "", ""
+
+    payload = r.json()
+    items = payload.get("data", payload) or []
+    abiertos = []
+    for it in items:
+        if str(it.get("status", "")).strip().lower() == "abierto":
+            start = to_yyyymmdd(it.get("month"))
+            end   = to_yyyymmdd(it.get("end_date"))
+            if start and end:
+                abiertos.append((start, end))
+
+    if not abiertos:
+        return "", ""
+
+    abiertos.sort(key=lambda t: t[1])  # más reciente por end_date
+    return abiertos[-1]
+
+
 def fetch_latest_closed_period(session) -> tuple[str, str]:
     """
     Llama a /process_periods y devuelve (start_yyyymmdd, end_yyyymmdd)
@@ -989,16 +1019,23 @@ def main():
         "Connection": "keep-alive",
     })
 
-    # --- período 'cerrado' más reciente para filtrar finiquitados (interfaz2) ---
-    period_start, period_end = fetch_latest_closed_period(session)
-    if period_start and period_end:
-        print(f"Período cerrado más reciente: {period_start} a {period_end}")
+    # --- período 'cerrado' (para interfaz2) ---
+    period_closed_start, period_closed_end = fetch_latest_closed_period(session)
+    if period_closed_start and period_closed_end:
+        print(f"Período CERRADO más reciente: {period_closed_start} a {period_closed_end}")
     else:
         print("⚠️ No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
 
+    # --- período 'abierto' (para interfaz1) ---
+    period_open_start, period_open_end = fetch_latest_open_period(session)
+    if period_open_start and period_open_end:
+        print(f"Período ABIERTO más reciente: {period_open_start} a {period_open_end}")
+    else:
+        print("⚠️ No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
+
     page = 1
-    all_rows = []       # interfaz1 (activos válidos)
-    filtered_rows = []  # interfaz2 (solo finiquitados dentro del período cerrado)
+    all_rows = []       # interfaz1 (activos válidos dentro de período ABIERTO)
+    filtered_rows = []  # interfaz2 (finiquitados dentro de período CERRADO)
 
     while True:
         url = f"{BASE}/employees?page_size={PAGE_SIZE}&page={page}"
@@ -1021,46 +1058,51 @@ def main():
 
         for emp in empleados:
             job = emp.get("current_job") or {}
-            # Normalizamos fechas relevantes
-            end_date = to_yyyymmdd(job.get("end_date"))
             start_date = to_yyyymmdd(job.get("start_date"))
+            end_date   = to_yyyymmdd(job.get("end_date"))
 
-            # --- Estado del empleado (detecta si tiene end_date) ---
+            # Detecta estado (usa tu helper existente)
             employee_status = analyze_employee_status(emp)
 
-            # --- (A) Finiquitados -> SOLO si end_date está dentro del último período 'cerrado' ---
+            # ---------- (A) FINIQUITADOS -> interfaz2 si caen en período CERRADO ----------
             if employee_status["destination"] == "filtered":
-                if period_start and period_end and end_date and (period_start <= end_date <= period_end):
-                    # Solo agregamos finiquitados dentro del rango al interfaz2
-                    filtered_rows.append(build_employee_row(emp))
-                # Pasamos al siguiente empleado (no se evalúan reglas de activos)
-                continue
+                if period_closed_start and period_closed_end and end_date:
+                    if period_closed_start <= end_date <= period_closed_end:
+                        filtered_rows.append(build_employee_row(emp))
+                continue  # no evaluar reglas de activos
 
-            # --- (B) Activos -> aplicar tus filtros de fechas para interfaz1 ---
+            # ---------- (B) ACTIVOS -> interfaz1 si end_date es NULL y activos en período ABIERTO ----------
+            if period_open_start and period_open_end:
+                # Activo = end_date vacío; activo durante el mes abierto si comenzó a más tardar al cierre del período
+                is_active_now = (end_date in (None, "", "00000000"))  # adaptado a tu normalización
+                started_in_or_before_period = (start_date and start_date <= period_open_end)
+                if not (is_active_now and started_in_or_before_period):
+                    # No entra a interfaz1 por criterio del período abierto
+                    continue
+
+            # Aplica además tus filtros >= 20220801 (como tenías)
             contract_analysis = analyze_employee_contracts(emp)
             company_entry_date = contract_analysis["oldest_start_date"]
             service_date = contract_analysis["oldest_start_date"]
             date_contract_status = start_date
             date_sps_elig = start_date
 
-            # Filtros (los que ya tenías)
             if not is_valid_date(company_entry_date, "20220801"):
-                pass  # descartado de interfaz1
-            elif not is_valid_date(service_date, "20220801"):
-                pass
-            elif not is_valid_date(date_contract_status, "20220801"):
-                pass
-            elif not is_valid_date(date_sps_elig, "20220801"):
-                pass
-            else:
-                # Activo válido -> interfaz1
-                rows_activos.append(build_employee_row(emp))
+                continue
+            if not is_valid_date(service_date, "20220801"):
+                continue
+            if not is_valid_date(date_contract_status, "20220801"):
+                continue
+            if not is_valid_date(date_sps_elig, "20220801"):
+                continue
+
+            rows_activos.append(build_employee_row(emp))
 
         all_rows.extend(rows_activos)
         print(f"Página {page} procesada")
         page += 1
 
-    # --- CSV principal (activos válidos) ---
+    # --- CSV interfaz1 (ACTIVOS en período ABIERTO) ---
     if all_rows:
         df = pd.DataFrame(all_rows, columns=COLS)
         pn_clean = df["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
@@ -1072,10 +1114,9 @@ def main():
         ).drop(columns=["_pn_num"])
         df.to_csv(OUT_CSV_SEMI, index=False, sep=";", encoding="utf-8")
 
-    # --- CSV finiquitados dentro del último período 'cerrado' (interfaz2) ---
+    # --- CSV interfaz2 (FINIQUITADOS en período CERRADO) ---
     if filtered_rows:
-        # IMPORTANTE: usamos las mismas columnas de salida (COLS)
-        df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
+        df_filtered = pd.DataFrame(filtered_rows, columns=COLS)  # mismas columnas
         pn_clean_filtered = df_filtered["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
         df_filtered["_pn_num"] = pd.to_numeric(pn_clean_filtered, errors="coerce")
         df_filtered = df_filtered.sort_values(
@@ -1090,3 +1131,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
