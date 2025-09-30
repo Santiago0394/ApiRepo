@@ -100,6 +100,37 @@ BANK_CODE_MAP = {
     "Consorcio": "55"
 }
 
+def fetch_latest_closed_period(session) -> tuple[str, str]:
+    """
+    Llama a /process_periods y devuelve (start_yyyymmdd, end_yyyymmdd)
+    del período 'cerrado' más reciente. Si no hay cerrados, devuelve ("","").
+    """
+    url = f"{BASE}/process_periods"
+    try:
+        r = session.get(url, timeout=TIMEOUT)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"⚠️ No se pudo obtener process_periods: {e}")
+        return "", ""
+
+    payload = r.json()
+    items = payload.get("data", payload) or []
+    cerrados = []
+    for it in items:
+        if str(it.get("status", "")).strip().lower() == "cerrado":
+            start = to_yyyymmdd(it.get("month"))
+            end   = to_yyyymmdd(it.get("end_date"))
+            if start and end:
+                cerrados.append((start, end))
+
+    if not cerrados:
+        return "", ""
+
+    # más reciente = el de mayor end_date
+    cerrados.sort(key=lambda t: t[1])  # ordena por end
+    return cerrados[-1]
+
+
 def split_prefix_suffix(surname_full):
     s = (surname_full or "").strip()
     if not s: return "",""
@@ -209,86 +240,6 @@ def map_country_of_birth(value) -> str:
     code = str(value).strip().upper()
     return COUNTRY_OF_BIRTH_MAP.get(code, code)
 
-
-def fetch_closed_process_period(session: requests.Session):
-    """Obtiene el último periodo de proceso con estado "cerrado"."""
-
-    def _extract_periods(payload):
-        collected = []
-
-        def _walk(node):
-            if isinstance(node, list):
-                for item in node:
-                    if isinstance(item, dict):
-                        collected.append(item)
-            elif isinstance(node, dict):
-                for key in ("data", "items", "results", "process_periods"):
-                    if key in node:
-                        _walk(node[key])
-
-        _walk(payload)
-        return collected
-
-    url = f"{BASE}/process_periods"
-    page = 1
-    seen_ids = set()
-    closed_periods = []
-
-    while True:
-        page_url = f"{url}?page_size={PAGE_SIZE}&page={page}"
-        try:
-            response = session.get(page_url, timeout=TIMEOUT)
-        except requests.RequestException as exc:
-            print(f"⚠️ No se pudo obtener el periodo cerrado: {exc}")
-            break
-
-        if response.status_code != 200:
-            print(
-                f"⚠️ No se pudo obtener el periodo cerrado: estado HTTP {response.status_code}"
-            )
-            break
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            print(f"⚠️ Respuesta inválida al obtener periodos: {exc}")
-            break
-
-        periods = _extract_periods(payload) or []
-        if not periods:
-            break
-
-        new_data = False
-        for period in periods:
-            period_id = period.get("id")
-            if period_id is not None and period_id in seen_ids:
-                continue
-            if period_id is not None:
-                seen_ids.add(period_id)
-            new_data = True
-            status = str(period.get("status", "")).strip().lower()
-            if status != "cerrado":
-                continue
-
-            start = to_yyyymmdd(period.get("start_date"))
-            end = to_yyyymmdd(period.get("end_date"))
-            if start and end:
-                closed_periods.append((start, end, period))
-
-        if not new_data:
-            break
-
-
-        page += 1
-
-    if not closed_periods:
-        return None
-
-    # Seleccionar el periodo cerrado más reciente
-    closed_periods.sort(key=lambda item: (item[1], item[0]), reverse=True)
-    start, end, raw_period = closed_periods[0]
-    return {"start": start, "end": end, "raw": raw_period}
-
 def nationality_codes(emp, ca):
     nats = emp.get("nationalities")
     if isinstance(nats, list) and nats:
@@ -356,16 +307,6 @@ def find_any(emp, aliases, date=False):
     if v is None: v = _from((emp.get("current_job") or {}).get("custom_attributes") or {})
     v = "" if v is None else str(v).strip()
     return to_yyyymmdd(v) if date else v
-
-def is_date_in_period(date_value: str, period_start: str, period_end: str) -> bool:
-    if not (date_value and period_start and period_end):
-        return False
-
-    date_norm = to_yyyymmdd(date_value)
-    if not date_norm:
-        return False
-
-    return period_start <= date_norm <= period_end
 
 def normalize_workforce_type(emp: dict) -> str:
     raw_num = get_from_attrs(emp, ["Workforce Type"], prefer_job=True)
@@ -1039,7 +980,7 @@ def main():
 
     # --- sesión http ---
     session = requests.Session()
-    retries = Retry(total=5, backoff_factor=0.4, status_forcelist=[429,502,503,504])
+    retries = Retry(total=5, backoff_factor=0.4, status_forcelist=[429, 502, 503, 504])
     session.mount("https://", HTTPAdapter(max_retries=retries, pool_maxsize=10))
     session.headers.update({
         "auth_token": auth,
@@ -1048,23 +989,16 @@ def main():
         "Connection": "keep-alive",
     })
 
-    closed_period = fetch_closed_process_period(session)
-    if closed_period:
-        closed_start = closed_period["start"]
-        closed_end = closed_period["end"]
-        print(
-            f"Periodo cerrado detectado: {closed_start} - {closed_end}"
-        )
+    # --- período 'cerrado' más reciente para filtrar finiquitados (interfaz2) ---
+    period_start, period_end = fetch_latest_closed_period(session)
+    if period_start and period_end:
+        print(f"Período cerrado más reciente: {period_start} a {period_end}")
     else:
-        closed_start = ""
-        closed_end = ""
-        print(
-            "⚠️ No se encontró un periodo cerrado. Se incluirán todos los terminados."
-        )
+        print("⚠️ No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
 
     page = 1
-    all_rows = []
-    filtered_rows = []  # Lista para empleados terminados dentro del periodo cerrado
+    all_rows = []       # interfaz1 (activos válidos)
+    filtered_rows = []  # interfaz2 (solo finiquitados dentro del período cerrado)
 
     while True:
         url = f"{BASE}/employees?page_size={PAGE_SIZE}&page={page}"
@@ -1083,70 +1017,50 @@ def main():
         if not empleados:
             break
 
-        rows = []
-        filtered_employees = []  # Lista para empleados filtrados en esta página
-       
+        rows_activos = []
+
         for emp in empleados:
             job = emp.get("current_job") or {}
-            dni = (emp.get("dni") or emp.get("document_number","")).replace(".","").replace("-","")
-           
-            # LÓGICA OPTIMIZADA: Separar por presencia de end_date
+            # Normalizamos fechas relevantes
+            end_date = to_yyyymmdd(job.get("end_date"))
+            start_date = to_yyyymmdd(job.get("start_date"))
+
+            # --- Estado del empleado (detecta si tiene end_date) ---
             employee_status = analyze_employee_status(emp)
-           
+
+            # --- (A) Finiquitados -> SOLO si end_date está dentro del último período 'cerrado' ---
             if employee_status["destination"] == "filtered":
-                end_date = employee_status.get("end_date")
-                include_terminated = True
-                end_date_norm = to_yyyymmdd(end_date)
-
-                if closed_start and closed_end:
-                    include_terminated = is_date_in_period(
-                        end_date_norm,
-                        closed_start,
-                        closed_end,
-                    )
-
-                if include_terminated:
-                    end_date_display = end_date_norm or (end_date or "")
-                    reason = f"Empleado terminado (end_date: {end_date_display})"
-                    if closed_start and closed_end:
-                        reason += f" dentro del periodo {closed_start}-{closed_end}"
-                    filtered_row = build_employee_row(emp, reason)
-                    filtered_employees.append(filtered_row)
+                if period_start and period_end and end_date and (period_start <= end_date <= period_end):
+                    # Solo agregamos finiquitados dentro del rango al interfaz2
+                    filtered_rows.append(build_employee_row(emp))
+                # Pasamos al siguiente empleado (no se evalúan reglas de activos)
                 continue
-           
-            # Si llega aquí, el empleado está ACTIVO - aplicar filtros de fechas
+
+            # --- (B) Activos -> aplicar tus filtros de fechas para interfaz1 ---
             contract_analysis = analyze_employee_contracts(emp)
             company_entry_date = contract_analysis["oldest_start_date"]
             service_date = contract_analysis["oldest_start_date"]
-            date_contract_status = to_yyyymmdd(job.get("start_date"))
-            date_sps_elig = to_yyyymmdd(job.get("start_date"))
-           
-            filter_reason = None
-           
-            # Aplicar filtros de fechas para empleados activos
+            date_contract_status = start_date
+            date_sps_elig = start_date
+
+            # Filtros (los que ya tenías)
             if not is_valid_date(company_entry_date, "20220801"):
-                filter_reason = f"Company Entry Date {company_entry_date} < 20220801"
+                pass  # descartado de interfaz1
             elif not is_valid_date(service_date, "20220801"):
-                filter_reason = f"Service Date {service_date} < 20220801"
+                pass
             elif not is_valid_date(date_contract_status, "20220801"):
-                filter_reason = f"Date Contract Status {date_contract_status} < 20220801"
+                pass
             elif not is_valid_date(date_sps_elig, "20220801"):
-                filter_reason = f"Date SPS_Eligibility {date_sps_elig} < 20220801"
-           
-            # Construir fila del empleado activo
-            if filter_reason:
-               continue
+                pass
+            else:
+                # Activo válido -> interfaz1
+                rows_activos.append(build_employee_row(emp))
 
-            # Empleado activo y válido - va al reporte principal
-            row = build_employee_row(emp)
-            rows.append(row)
-
-        all_rows.extend(rows)
-        filtered_rows.extend(filtered_employees)
+        all_rows.extend(rows_activos)
         print(f"Página {page} procesada")
         page += 1
 
-    # Generar CSV principal (empleados válidos)
+    # --- CSV principal (activos válidos) ---
     if all_rows:
         df = pd.DataFrame(all_rows, columns=COLS)
         pn_clean = df["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
@@ -1158,9 +1072,10 @@ def main():
         ).drop(columns=["_pn_num"])
         df.to_csv(OUT_CSV_SEMI, index=False, sep=";", encoding="utf-8")
 
-    # Generar CSV de empleados filtrados (empleados terminados)
+    # --- CSV finiquitados dentro del último período 'cerrado' (interfaz2) ---
     if filtered_rows:
-        df_filtered = pd.DataFrame(filtered_rows, columns=FILTERED_COLS)
+        # IMPORTANTE: usamos las mismas columnas de salida (COLS)
+        df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
         pn_clean_filtered = df_filtered["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
         df_filtered["_pn_num"] = pd.to_numeric(pn_clean_filtered, errors="coerce")
         df_filtered = df_filtered.sort_values(
@@ -1169,10 +1084,6 @@ def main():
             kind="mergesort"
         ).drop(columns=["_pn_num"])
         df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
-       
-        filtered_count_message = len(filtered_rows)
-    else:
-        filtered_count_message = 0
 
     if os.name == "nt" and not sys.stdout.isatty():
         input("Presiona ENTER para cerrar...")
