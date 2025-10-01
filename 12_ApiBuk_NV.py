@@ -1019,68 +1019,90 @@ def main():
         "Connection": "keep-alive",
     })
 
-    # --- período 'cerrado' (para interfaz2) ---
+    # --- períodos para filtros ---
     period_closed_start, period_closed_end = fetch_latest_closed_period(session)
     if period_closed_start and period_closed_end:
         print(f"Período CERRADO más reciente: {period_closed_start} a {period_closed_end}")
     else:
         print("⚠️ No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
 
-    # --- período 'abierto' (para interfaz1) ---
     period_open_start, period_open_end = fetch_latest_open_period(session)
     if period_open_start and period_open_end:
         print(f"Período ABIERTO más reciente: {period_open_start} a {period_open_end}")
     else:
         print("⚠️ No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
 
+    # --- contadores / progreso ---
     page = 1
     all_rows = []       # interfaz1 (activos válidos dentro de período ABIERTO)
     filtered_rows = []  # interfaz2 (finiquitados dentro de período CERRADO)
+    total_added_activos = 0
+    total_added_fini = 0
+    processed_global = 0
+    expected_global = None  # lo intento leer de payload['pagination']['count']
 
     while True:
         url = f"{BASE}/employees?page_size={PAGE_SIZE}&page={page}"
         try:
             r = session.get(url, timeout=TIMEOUT)
         except requests.RequestException as e:
-            print(f"❌ Error de red en página {page}: {e}")
+            print(f"\n❌ Error de red en página {page}: {e}")
             break
 
         if r.status_code != 200:
-            print(f"❌ Error {r.status_code} en página {page}")
+            print(f"\n❌ Error {r.status_code} en página {page}")
             break
 
         payload = r.json()
+        if expected_global is None:
+            try:
+                expected_global = int(((payload or {}).get("pagination") or {}).get("count") or 0) or None
+            except Exception:
+                expected_global = None
+
         empleados = payload.get("data", payload)
         if not empleados:
             break
 
         rows_activos = []
+        added_activos_page = 0
+        added_fini_page = 0
+        page_total = len(empleados)
 
-        for emp in empleados:
+        print(f"\nProcesando página {page} ({page_total} empleados)...")
+
+        for i, emp in enumerate(empleados, start=1):
             job = emp.get("current_job") or {}
             start_date = to_yyyymmdd(job.get("start_date"))
             end_date   = to_yyyymmdd(job.get("end_date"))
 
-            # Detecta estado (usa tu helper existente)
+            # progreso en línea (global si hay total, si no por página)
+            processed_global += 1
+            if expected_global:
+                msg = f"\r  ▶ Progreso global: {processed_global}/{expected_global} | página {page}: {i}/{page_total}"
+            else:
+                msg = f"\r  ▶ Progreso página {page}: {i}/{page_total}"
+            print(msg, end="", flush=True)
+
+            # Detecta estado
             employee_status = analyze_employee_status(emp)
 
-            # ---------- (A) FINIQUITADOS -> interfaz2 si caen en período CERRADO ----------
+            # (A) FINIQUITADOS -> interfaz2 si end_date ∈ [periodo cerrado]
             if employee_status["destination"] == "filtered":
                 if period_closed_start and period_closed_end and end_date:
                     if period_closed_start <= end_date <= period_closed_end:
                         filtered_rows.append(build_employee_row(emp))
+                        added_fini_page += 1
                 continue  # no evaluar reglas de activos
 
-            # ---------- (B) ACTIVOS -> interfaz1 si end_date es NULL y activos en período ABIERTO ----------
+            # (B) ACTIVOS -> interfaz1 si end_date es NULL y estaban activos en período ABIERTO
             if period_open_start and period_open_end:
-                # Activo = end_date vacío; activo durante el mes abierto si comenzó a más tardar al cierre del período
-                is_active_now = (end_date in (None, "", "00000000"))  # adaptado a tu normalización
+                is_active_now = (end_date in (None, "", "00000000"))
                 started_in_or_before_period = (start_date and start_date <= period_open_end)
                 if not (is_active_now and started_in_or_before_period):
-                    # No entra a interfaz1 por criterio del período abierto
                     continue
 
-            # Aplica además tus filtros >= 20220801 (como tenías)
+            # Filtros ≥ 20220801 (los que ya tenías)
             contract_analysis = analyze_employee_contracts(emp)
             company_entry_date = contract_analysis["oldest_start_date"]
             service_date = contract_analysis["oldest_start_date"]
@@ -1097,12 +1119,20 @@ def main():
                 continue
 
             rows_activos.append(build_employee_row(emp))
+            added_activos_page += 1
+
+        # fin de página
+        print("\n  ✔ Página procesada: "
+              f"activos agregados = {added_activos_page}, "
+              f"finiquitados agregados = {added_fini_page}")
 
         all_rows.extend(rows_activos)
-        print(f"Página {page} procesada")
+        total_added_activos += added_activos_page
+        total_added_fini += added_fini_page
+
         page += 1
 
-    # --- CSV interfaz1 (ACTIVOS en período ABIERTO) ---
+    # --- CSV interfaz1 (ACTIVOS) ---
     if all_rows:
         df = pd.DataFrame(all_rows, columns=COLS)
         pn_clean = df["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
@@ -1113,10 +1143,13 @@ def main():
             kind="mergesort"
         ).drop(columns=["_pn_num"])
         df.to_csv(OUT_CSV_SEMI, index=False, sep=";", encoding="utf-8")
+        print(f"\n✅ Guardado {OUT_CSV_SEMI} con {len(df)} registros.")
+    else:
+        print("\nℹ️ No se agregaron registros a interfaz1_apibuk.csv.")
 
     # --- CSV interfaz2 (FINIQUITADOS en período CERRADO) ---
     if filtered_rows:
-        df_filtered = pd.DataFrame(filtered_rows, columns=COLS)  # mismas columnas
+        df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
         pn_clean_filtered = df_filtered["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
         df_filtered["_pn_num"] = pd.to_numeric(pn_clean_filtered, errors="coerce")
         df_filtered = df_filtered.sort_values(
@@ -1125,10 +1158,21 @@ def main():
             kind="mergesort"
         ).drop(columns=["_pn_num"])
         df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
+        print(f"✅ Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
+    else:
+        print("ℹ️ No se agregaron registros a interfaz2_apibuk.csv.")
+
+    # --- resumen final ---
+    print("\n===== RESUMEN =====")
+    print(f"Activos añadidos a interfaz1: {total_added_activos}")
+    print(f"Finiquitados añadidos a interfaz2: {total_added_fini}")
+    if expected_global:
+        print(f"Total empleados vistos: {processed_global}/{expected_global}")
+    else:
+        print(f"Total empleados vistos: {processed_global}")
 
     if os.name == "nt" and not sys.stdout.isatty():
         input("Presiona ENTER para cerrar...")
 
 if __name__ == "__main__":
     main()
-
