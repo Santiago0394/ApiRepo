@@ -1069,7 +1069,7 @@ def main():
         added_fini_page = 0
         page_total = len(empleados)
 
-        print(f"\nProcesando página {page} ({page_total} empleados)...")
+        print(f"\nProcesando página {page}...")
 
         for i, emp in enumerate(empleados, start=1):
             job = emp.get("current_job") or {}
@@ -1167,7 +1167,7 @@ def main():
     print(f"Activos añadidos a interfaz1: {total_added_activos}")
     print(f"Finiquitados añadidos a interfaz2: {total_added_fini}")
     if expected_global:
-        print(f"Total empleados vistos: {processed_global}/{expected_global}")
+        print(f"Total empleados vistos: {processed_global}")
     else:
         print(f"Total empleados vistos: {processed_global}")
 
