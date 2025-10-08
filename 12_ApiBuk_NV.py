@@ -16,7 +16,7 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # -------- Config --------
-BASE = "https://deloitte-innomotics-test.buk.cl/api/v1/chile"
+BASE = "https://deloitte-innomotics.buk.cl/api/v1/chile"
 PAGE_SIZE = 1000
 TIMEOUT = 20
 OUT_CSV_SEMI = os.path.join(BASE_DIR, "interfaz1_apibuk.csv")
