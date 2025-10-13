@@ -366,26 +366,57 @@ def determine_exit_reason(emp: dict, job: dict, company_exit_date: str) -> str:
     
     return exit_code
 
-def find_local_pay_level_long(emp: dict) -> str:
+def find_local_pay_level(emp: dict) -> str:
     """
-    Busca dentro del array 'jobs' el campo 'Local Pay Level' que tenga
-    más de 9 caracteres y que no sea 'NOT_APPLICABLE'.
-    Retorna el primer valor encontrado que cumpla las condiciones.
+    Obtiene 'Local Pay Level' priorizando:
+    1) current_job.custom_attributes
+    2) emp.custom_attributes
+    3) jobs[].custom_attributes (toma el del job más reciente por start_date)
+    Evita valores vacíos o 'NOT_APPLICABLE'.
     """
-    jobs = emp.get("jobs", [])
-    
-    for job in jobs:
-        custom_attrs = job.get("custom_attributes", {})
-        local_pay_level = custom_attrs.get("Local Pay Level", "")
-        
-        # Convertir a string y hacer strip por si acaso
-        local_pay_level_str = str(local_pay_level).strip()
-        
-        if len(local_pay_level_str) > 9 and local_pay_level_str != "NOT_APPLICABLE":
-            return local_pay_level_str
-    
-    # Si no encuentra ninguno que cumpla las condiciones, retornar vacío
+    aliases = ["Local Pay Level", "Local pay level", "Local PayLevel", "Pay Level", "Pay level"]
+
+    # 1) current_job.custom_attributes (prefer_job=True ya mira job_ca primero)
+    v = get_from_attrs(emp, aliases, prefer_job=True)
+    if v and v.upper() != "NOT_APPLICABLE":
+        return v.strip()
+
+    # 2) emp.custom_attributes
+    v = get_from_attrs(emp, aliases, prefer_job=False)
+    if v and v.upper() != "NOT_APPLICABLE":
+        return v.strip()
+
+    # 3) jobs[]: elegir el valor del job más reciente por start_date
+    best = ""
+    best_date = ""
+    alias_norm = {_norm_key(a) for a in aliases}
+
+    for job in (emp.get("jobs") or []):
+        ca = job.get("custom_attributes") or {}
+        candidate = None
+        for k, val in ca.items():
+            if _norm_key(k) in alias_norm:
+                candidate = str(val).strip()
+                break
+
+        if candidate and candidate.upper() != "NOT_APPLICABLE":
+            d = to_yyyymmdd(job.get("start_date"))
+            # Prefiere el job con start_date más reciente; si no hay fecha, usa el primero válido
+            if d and (not best_date or d > best_date):
+                best, best_date = candidate, d
+            elif not best:
+                best = candidate
+
+    if best:
+        return best.strip()
+
+    # 4) Último recurso: buscar en estructuras planas
+    v = find_any(emp, aliases)
+    if v and v.upper() != "NOT_APPLICABLE":
+        return v.strip()
+
     return ""
+
 
 
 TERMINATION_REASON_MAP = {
@@ -621,6 +652,309 @@ COLS = [
 # Columnas para empleados filtrados (incluye motivo de filtro)
 FILTERED_COLS = COLS + ["Filter Reason"]
 
+def find_local_pay_level_strict(emp: dict) -> str:
+    '''
+    SOLO devuelve 'Local Pay Level' si su longitud > 9 (p. ej. 'CL_CSSOSEROPTL09').
+    Busca la clave normalizándola (tolerante a NBSP, guiones/underscores, mayúsculas, etc.).
+    Prioridad:
+      1) current_job.custom_attributes['Local Pay Level']
+      2) emp.custom_attributes['Local Pay Level']
+      3) jobs[].custom_attributes['Local Pay Level'] (job más reciente por start_date)
+    '''
+    def _is_long_ok(v):
+        if v is None:
+            return False
+        s = str(v).strip()
+        return len(s) > 9 and s.upper() != "NOT_APPLICABLE"
+
+    def _get_norm_key(dct, target="Local Pay Level"):
+        # NBSP (\u00A0) → espacio normal, luego _norm_key
+        if not isinstance(dct, dict):
+            return None
+        wanted = _norm_key(str(target).replace('\u00A0',' '))
+        for k, v in dct.items():
+            k_norm = _norm_key(str(k).replace('\u00A0',' '))
+            if k_norm == wanted:
+                return v
+        return None
+
+    # 1) current_job.custom_attributes
+    job = (emp.get("current_job") or {})
+    job_ca = job.get("custom_attributes") or {}
+    v = _get_norm_key(job_ca, "Local Pay Level")
+    if _is_long_ok(v):
+        return str(v).strip()
+
+    # 2) emp.custom_attributes
+    emp_ca = emp.get("custom_attributes") or {}
+    v = _get_norm_key(emp_ca, "Local Pay Level")
+    if _is_long_ok(v):
+        return str(v).strip()
+
+    # 3) recorrer jobs (toma el más reciente por start_date)
+    best = ""
+    best_date = ""
+    for jb in (emp.get("jobs") or []):
+        ca = jb.get("custom_attributes") or {}
+        v = _get_norm_key(ca, "Local Pay Level")
+        if _is_long_ok(v):
+            d = to_yyyymmdd(jb.get("start_date"))
+            if d and (not best_date or d > best_date):
+                best, best_date = str(v).strip(), d
+            elif not best:
+                best = str(v).strip()
+
+    return best
+
+
+def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
+    """
+    Busca 'Local Pay Level' en TODO el objeto del empleado:
+      1) current_job.custom_attributes['Local Pay Level']   (si es válido → devuelve)
+      2) emp.custom_attributes['Local Pay Level']           (si es válido → devuelve)
+      3) jobs[].custom_attributes['Local Pay Level']        (elige el del job más reciente por start_date)
+      4) BÚSQUEDA PROFUNDA: recorre todo el dict/list y junta cualquier 'Local Pay Level' que aparezca en cualquier parte.
+         Aplica heurísticas para escoger el mejor: prefiere longitud > 9, que empiece con 'CL_', y la cadena más larga.
+
+    Si return_debug=True, además devuelve info de cómo/desde dónde se obtuvo.
+    """
+    TARGET_KEY = "Local Pay Level"
+
+    def _is_valid(v: object) -> bool:
+        if v is None:
+            return False
+        s = str(v).strip()
+        if not s or s.upper() == "NOT_APPLICABLE":
+            return False
+        # Lo que pides como "correcto" siempre es largo. Mantengo el umbral >9.
+        return len(s) > 9
+
+    def _norm(s: str) -> str:
+        # misma normalización que usas en _norm_key, ampliada con NBSP → espacio
+        s = "" if s is None else str(s)
+        s = s.replace("\u00A0", " ")
+        s = s.lower()
+        s = (s.replace("á","a").replace("é","e").replace("í","i")
+               .replace("ó","o").replace("ú","u").replace("ñ","n"))
+        for ch in ("-", "_"):
+            s = s.replace(ch, " ")
+        return " ".join(s.split())
+
+    wanted = _norm(TARGET_KEY)
+
+    def _get(dct: dict):
+        """Obtiene por clave normalizada (tolera NBSP, guion/underscore, mayúsculas, dobles espacios)."""
+        if not isinstance(dct, dict):
+            return None
+        for k, v in dct.items():
+            if _norm(str(k)) == wanted:
+                return v
+        return None
+
+    def to_date(s):
+        return to_yyyymmdd(s) if s else ""
+
+    # 1) current_job.custom_attributes
+    job = emp.get("current_job") or {}
+    job_ca = job.get("custom_attributes") or {}
+    v = _get(job_ca)
+    if _is_valid(v):
+        return (str(v).strip(), {"source": "current_job.custom_attributes"}) if return_debug else str(v).strip()
+
+    # 2) emp.custom_attributes
+    emp_ca = emp.get("custom_attributes") or {}
+    v = _get(emp_ca)
+    if _is_valid(v):
+        return (str(v).strip(), {"source": "emp.custom_attributes"}) if return_debug else str(v).strip()
+
+    # 3) jobs[].custom_attributes (elige el más reciente por start_date)
+    best = ""
+    best_date = ""
+    best_src = None
+    for idx, jb in enumerate(emp.get("jobs") or []):
+        ca = (jb or {}).get("custom_attributes") or {}
+        vv = _get(ca)
+        if _is_valid(vv):
+            d = to_date((jb or {}).get("start_date"))
+            if d and (not best_date or d > best_date):
+                best, best_date = str(vv).strip(), d
+                best_src = {"source": f"jobs[{idx}].custom_attributes", "job_start_date": d}
+            elif not best:
+                best = str(vv).strip()
+                best_src = {"source": f"jobs[{idx}].custom_attributes", "job_start_date": d}
+    if best:
+        return (best, best_src) if return_debug else best
+
+    # 4) BÚSQUEDA PROFUNDA (recorre todo el objeto)
+    candidates = []  # (valor, path_string)
+    def walk(obj, path="emp"):
+        if isinstance(obj, dict):
+            # recoge si tiene la clave
+            val = _get(obj)
+            if _is_valid(val):
+                candidates.append((str(val).strip(), path))
+            # sigue recorriendo
+            for k, v in obj.items():
+                walk(v, f"{path}.{k}")
+        elif isinstance(obj, list):
+            for i, it in enumerate(obj):
+                walk(it, f"{path}[{i}]")
+        # otros tipos: nada
+
+    walk(emp)
+
+    if candidates:
+        # Heurística de selección:
+        #  - prioriza que empiece con 'CL_'
+        #  - mayor longitud
+        #  - última opción: el primero que aparezca
+        def score(val_path):
+            val, p = val_path
+            sc = 0
+            if val.startswith("CL_"):
+                sc += 3
+            sc += min(len(val), 60) / 10.0  # más largo, mejor
+            return sc
+        candidates.sort(key=score, reverse=True)
+        best_val, best_path = candidates[0]
+        return (best_val, {"source": "deep_scan", "path": best_path}) if return_debug else best_val
+
+    # Nada encontrado
+    return ("", {"source": "none"}) if return_debug else ""
+
+import re
+
+def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
+    """
+    Devuelve el Local Pay Level de forma robusta.
+    Prioridad:
+      1) current_job.custom_attributes["Local Pay Level"]
+      2) emp.custom_attributes["Local Pay Level"]
+      3) jobs[].custom_attributes["Local Pay Level"] (job más reciente por start_date)
+      4) deep-scan de todo el objeto (clave normalizada)
+      5) derivar desde GRIP Position: 'CS-XX-YYY-ZZ09' -> 'CL_CSXXYYYZZ09' (con 'CL_' y sin '-')
+      6) regex: primer string que parezca 'CL_' + >=7 chars mayúsculas/dígitos
+    """
+    def _is_valid(v):
+        if v is None: return False
+        s = str(v).strip()
+        return s and s.upper() != "NOT_APPLICABLE" and len(s) > 9
+
+    def _norm_key(s: str) -> str:
+        s = "" if s is None else str(s)
+        s = s.replace("\u00A0", " ").lower()  # NBSP → espacio
+        s = (s.replace("á","a").replace("é","e").replace("í","i")
+               .replace("ó","o").replace("ú","u").replace("ñ","n"))
+        for ch in ("-", "_"):
+            s = s.replace(ch, " ")
+        return " ".join(s.split())
+
+    TARGET = _norm_key("Local Pay Level")
+
+    def _get_from(dct):
+        if not isinstance(dct, dict): return None
+        for k,v in dct.items():
+            if _norm_key(k) == TARGET:
+                return v
+        return None
+
+    def _to_date(s): return to_yyyymmdd(s) if s else ""
+
+    dbg = {"source": None}
+
+    # 1) current_job.custom_attributes
+    job = emp.get("current_job") or {}
+    job_ca = job.get("custom_attributes") or {}
+    v = _get_from(job_ca)
+    if _is_valid(v):
+        if return_debug: dbg["source"] = "current_job.custom_attributes"
+        return (str(v).strip(), dbg) if return_debug else str(v).strip()
+
+    # 2) emp.custom_attributes
+    emp_ca = emp.get("custom_attributes") or {}
+    v = _get_from(emp_ca)
+    if _is_valid(v):
+        if return_debug: dbg["source"] = "emp.custom_attributes"
+        return (str(v).strip(), dbg) if return_debug else str(v).strip()
+
+    # 3) jobs[] más reciente
+    best, best_date = "", ""
+    best_src = None
+    for idx, jb in enumerate(emp.get("jobs") or []):
+        ca = (jb or {}).get("custom_attributes") or {}
+        vv = _get_from(ca)
+        if _is_valid(vv):
+            d = _to_date((jb or {}).get("start_date"))
+            if d and (not best_date or d > best_date):
+                best, best_date = str(vv).strip(), d
+                best_src = f"jobs[{idx}].custom_attributes"
+            elif not best:
+                best = str(vv).strip()
+                best_src = f"jobs[{idx}].custom_attributes"
+    if best:
+        if return_debug: dbg["source"] = best_src
+        return (best, dbg) if return_debug else best
+
+    # 4) deep scan por clave normalizada
+    candidates = []
+    def walk(obj, path="emp"):
+        if isinstance(obj, dict):
+            val = _get_from(obj)
+            if _is_valid(val):
+                candidates.append((str(val).strip(), path))
+            for k, v in obj.items():
+                walk(v, f"{path}.{k}")
+        elif isinstance(obj, list):
+            for i, it in enumerate(obj):
+                walk(it, f"{path}[{i}]")
+    walk(emp)
+    if candidates:
+        # preferir que empiece por CL_, luego mayor longitud
+        def score(item):
+            val, _ = item
+            s = 0
+            if val.startswith("CL_"): s += 3
+            s += min(len(val), 60)/10.0
+            return s
+        candidates.sort(key=score, reverse=True)
+        best_val, best_path = candidates[0]
+        if return_debug: dbg.update({"source":"deep_scan", "path": best_path})
+        return (best_val, dbg) if return_debug else best_val
+
+    # 5) derivar desde GRIP Position → CL_ + (GRIP sin '-')
+    grip = (job_ca.get("GRIP Position") or emp_ca.get("GRIP Position") or "").strip()
+    if grip:
+        derived = f"CL_{grip.replace('-', '')}"
+        if _is_valid(derived):
+            if return_debug: dbg["source"] = "derived_from_GRIP"
+            return (derived, dbg) if return_debug else derived
+
+    # 6) regex: cualquier valor que parezca un LPL
+    #    Ej: CL_CSSOSEROPTL09, CL_MFMRMATECTE999, etc.
+    REG = re.compile(r"\bCL_[A-Z0-9]{7,}\b")
+    def find_any_string(obj):
+        out = []
+        def w(o):
+            if isinstance(o, dict):
+                for k,v in o.items(): w(v)
+            elif isinstance(o, list):
+                for it in o: w(it)
+            else:
+                s = str(o)
+                for m in REG.findall(s):
+                    out.append(m)
+        w(obj)
+        return out
+    regex_hits = find_any_string(emp)
+    if regex_hits:
+        if return_debug: dbg["source"] = "regex_scan"
+        return (regex_hits[0], dbg) if return_debug else regex_hits[0]
+
+    if return_debug: dbg["source"] = "none"
+    return ("", dbg) if return_debug else ""
+
+
+
 def build_employee_row(emp, filter_reason=None):
     """
     Construye una fila completa para un empleado.
@@ -723,7 +1057,7 @@ def build_employee_row(emp, filter_reason=None):
     functional_area = get_from_attrs(emp, ["Functional Area"], prefer_job=True)
     country_region = get_from_attrs(emp, ["Country/Region Sub Entity", "Country/Region"], prefer_job=True) or emp.get("country","")
     hr_service_area = get_from_attrs(emp, ["HR Service Area"], prefer_job=True)
-    local_pay_level = find_local_pay_level_long(emp)
+    local_pay_level = get_local_pay_level_best(emp)
     date_workfoce_type = company_entry_date
 
     contract_date = company_entry_date
