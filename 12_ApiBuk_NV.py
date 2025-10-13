@@ -555,13 +555,13 @@ def map_employee_category(mgmt_group_value):
 
 # -------- Mapea de 1,2 a Sr./Sra. --------
 def map_salutation(val):
-    """Convierte el resultado de map_gender a (Sr. o Sra.)"""
+    """Convierte el resultado de map_gender a (SR. o SRA.)"""
     gender_value = map_gender(val)
    
     if gender_value == 1:
-        return "Sr."
+        return "SR."
     elif gender_value == 2:
-        return "Sra."
+        return "SRA."
     else:
         return ""
 
@@ -617,7 +617,7 @@ COLS = [
     "Middle Initial","Aristocratic Title","Surname Prefix","Surname Suffix",
     "Preferred Name / Nickname","Surname 2","Title","Gender","Date of Birth",
     "Nationality 1","Nationality 2","Nationality 3","Highest Level of Education",
-    "Contract Type","Contract Status","Contractual Weekly Working",
+    "Contract Type","Contract Status","Contractual Weekly Working Time",
     "Standard Work Week","Company Entry Date","Service Date","Entry Reason","Company Exit Date",
     "Exit Reason","Workforce Type","Management Group","Date Management Group","ARE",
     "Location / Office (short name)","In-company Manager","OrgCode","Technical PMP Flag","GPM Status",
@@ -630,7 +630,7 @@ COLS = [
     "Preferred Surname","Eligibility for Compensation Planning","GRIP Position","SPS_Eligibility","Date SPS_Eligibility",
     "Total Target Cash","Date Total Target Cash","Private E-mail Address",
     "Private Mobile Phone Number","Base Salary","Date Base Salary","Fixed Allowances","Date Fixed Allowance","JobRegion",
-    "Finance Company Code","Currency – Payroll","LTI_Eligibility","Date LTI_Eligibility","Bank Country/Region","Bank Code",
+    "Finance Company Code","Currency Payroll","LTI_Eligibility","Date LTI_Eligibility","Bank Country/Region Code","Bank Code",
     "Bank Control Key","Account Number","International Bank Account Number","Payroll Area","Termination Date",
     "Last Date Worked","Position","Legal Entity",
     "Employee Group","Employee Category","Time Management Status","Employee Subgroup","Pay Scale Type","Pay Scale Area",
@@ -651,7 +651,16 @@ def build_employee_row(emp, filter_reason=None):
     job_ca = job.get("custom_attributes") or {}
 
     # Identificación / nombres
-    dni = (emp.get("dni") or emp.get("document_number","")).replace(".","").replace("-","")
+    # Obtener RUT y separar dígito verificador para ordenamiento correcto
+    dni_raw = (emp.get("dni") or emp.get("document_number","")).replace(".","")
+    # Si tiene guión, separar parte numérica y verificador
+    if "-" in dni_raw:
+        parts = dni_raw.split("-")
+        dni = parts[0] + parts[1]  # formato: "10213754k" o "65589729"
+    else:
+        # Si NO tiene guión, asumir que último carácter es verificador
+        dni = dni_raw
+   
     first_name = emp.get("first_name","").strip()
     first_name_first = first_name.split()[0] if first_name else ""  # solo primer nombre
     s1 = emp.get("surname") or emp.get("last_name","")
@@ -674,8 +683,7 @@ def build_employee_row(emp, filter_reason=None):
    
     contract_type_code = map_contract_type_code(contract_type_raw)
     contract_status = map_contract_status_code(emp)
-    contractual_weekly = ( get_from_attrs(emp, ["Contractual Weekly Working","Weekly Hours","Standard Work Week"], prefer_job=True)
-                           or str(job.get("weekly_hours") or "").strip() )
+    contractual_weekly = str(job.get("weekly_hours") or "").strip()
     try:
         if contractual_weekly not in ("", None):
             contractual_weekly = f"{float(str(contractual_weekly).replace(',','.')):.2f}"
@@ -701,7 +709,7 @@ def build_employee_row(emp, filter_reason=None):
     mgmt_group = get_from_attrs(emp, ["Management Group"], prefer_job=True)
    
     # Date Management Group
-    date_senior_mgmt = get_from_attrs(emp, ["Date Senior Management Type", "Date Management"], prefer_job=True, date=True)
+    date_senior_mgmt = get_from_attrs(emp, ["Date Management group"], prefer_job=True, date=True)
     if date_senior_mgmt and date_senior_mgmt != "99991231":
         date_mgmt_group = date_senior_mgmt
     else:
@@ -723,7 +731,7 @@ def build_employee_row(emp, filter_reason=None):
     addr2 = get_from_attrs(emp, ["Address 2"]) or emp.get("address_line2","")
     addr3 = get_from_attrs(emp, ["Address 3"]) or emp.get("address_line3","")
     city = emp.get("district", "")
-    state = (get_from_attrs(emp, ["State"]) or emp.get("state",""))
+    state = get_from_attrs(emp, ["Tax Country/Region State"], prefer_job=True)
     country_home = get_from_attrs(emp, ["Country/Region - Home Address"], prefer_job=True)
     postal_code = get_from_attrs(emp, ["Postal Code","Código Postal"], prefer_job=False)
 
@@ -732,12 +740,12 @@ def build_employee_row(emp, filter_reason=None):
     cost_center = ( get_from_attrs(emp, ["Cost Center"], prefer_job=True)
                     or emp.get("current_job",{}).get("cost_center","") )
     functional_area = get_from_attrs(emp, ["Functional Area"], prefer_job=True)
-    country_region = get_from_attrs(emp, ["Country/Region"], prefer_job=True) or emp.get("country","")
+    country_region = get_from_attrs(emp, ["Country/Region Sub Entity", "Country/Region"], prefer_job=True) or emp.get("country","")
     hr_service_area = get_from_attrs(emp, ["HR Service Area"], prefer_job=True)
     local_pay_level = get_from_attrs(emp, ["Local Pay Level"], prefer_job=True, date=True)
-
-    contract_date = (get_from_attrs(emp, ["Contract Date","Date Contract"], prefer_job=True, date=True)
-                     or to_yyyymmdd(job.get("start_date")))
+    date_workfoce_type = company_entry_date
+   
+    contract_date = company_entry_date
 
     # Base Pay: 2 decimales
     base_pay_raw = get_from_attrs(emp, ["Base Pay","Salario Base","Salary Base"], prefer_job=True)
@@ -760,7 +768,8 @@ def build_employee_row(emp, filter_reason=None):
             if float(tia_raw) == 0.0:
                 target_incentive_amount = "NOT_APPLICABLE"
             else:
-                target_incentive_amount = str(tia_raw).strip()
+                # Formatear siempre con 2 decimales
+                target_incentive_amount = f"{float(tia_raw):.2f}"
         except (ValueError, TypeError):
             # Si no se puede convertir a float, mantener el valor original
             target_incentive_amount = str(tia_raw).strip()
@@ -838,9 +847,9 @@ def build_employee_row(emp, filter_reason=None):
 
     fixed_allowances = get_from_attrs(emp, ["Fixed Allowances"], prefer_job=True)
     date_fixed_allowance = get_from_attrs(emp, ["Date Fixed Allowance"], prefer_job=True, date=True)
-    job_region = get_from_attrs(emp, ["JobRegion","Country/Region Sub Entity"], prefer_job=True)
+    job_region = job_ca.get("JobRegion", "")
     finance_company_code = get_from_attrs(emp, ["Finance Company Code"], prefer_job=True)
-    currency_payroll = get_from_attrs(emp, ["Currency – Payroll","Currency - Payroll","Currency–Payroll"], prefer_job=True)
+    currency_payroll = get_from_attrs(emp, ["Currency – Payroll","Currency - Payroll","Currency Payroll","Currency–Payroll","Currency-Payroll"], prefer_job=True)
     lti_elig = get_from_attrs(emp, ["LTI_Eligibility"], prefer_job=True)
     date_lti_elig = get_from_attrs(emp, ["Date LTI_Eligibility"], prefer_job=True, date=True)
     bank_country = get_from_attrs(emp, ["Bank Country/Region Code","Bank Country/Region"], prefer_job=True)
@@ -901,7 +910,7 @@ def build_employee_row(emp, filter_reason=None):
         "Highest Level of Education": highest_edu,
         "Contract Type": contract_type_code,
         "Contract Status": contract_status,
-        "Contractual Weekly Working": contractual_weekly,
+        "Contractual Weekly Working Time": contractual_weekly,
         "Standard Work Week": standard_work_week,
         "Company Entry Date": company_entry_date,
         "Service Date": service_date,
@@ -934,7 +943,7 @@ def build_employee_row(emp, filter_reason=None):
         "Country/Region": country_region,
         "HR Service Area": hr_service_area,
         "Local Pay Level": local_pay_level,
-        "Date Workforce Type": "",
+        "Date Workforce Type": date_workfoce_type,
         "Contract Date": contract_date,
         "Base Pay": base_pay,
         "Target Incentive Amount": target_incentive_amount,
@@ -965,10 +974,10 @@ def build_employee_row(emp, filter_reason=None):
         "Date Fixed Allowance": date_fixed_allowance,
         "JobRegion": job_region,
         "Finance Company Code": finance_company_code,
-        "Currency – Payroll": currency_payroll,
+        "Currency Payroll": currency_payroll,
         "LTI_Eligibility": lti_elig,
         "Date LTI_Eligibility": date_lti_elig,
-        "Bank Country/Region": bank_country,
+        "Bank Country/Region Code": bank_country,
         "Bank Code": bank_code,
         "Bank Control Key": bank_control_key,
         "Account Number": account_number,
@@ -986,6 +995,7 @@ def build_employee_row(emp, filter_reason=None):
         "Pay Scale Area": pay_scale_area,
         "Pay Scale Group": pay_scale_group,
         "Contract Type ": convert_to_chl_code(contract_type_code),
+        "Standard Weekly Hours": contractual_weekly,
         "Country of Birth": country_of_birth,
         "Salutation": salutation,
         "Preferred Name": first_name_first,
@@ -1024,13 +1034,13 @@ def main():
     if period_closed_start and period_closed_end:
         print(f"Período CERRADO más reciente: {period_closed_start} a {period_closed_end}")
     else:
-        print("⚠️ No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
+        print(" No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
 
     period_open_start, period_open_end = fetch_latest_open_period(session)
     if period_open_start and period_open_end:
         print(f"Período ABIERTO más reciente: {period_open_start} a {period_open_end}")
     else:
-        print("⚠️ No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
+        print(" No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
 
     # --- contadores / progreso ---
     page = 1
@@ -1046,11 +1056,11 @@ def main():
         try:
             r = session.get(url, timeout=TIMEOUT)
         except requests.RequestException as e:
-            print(f"\n❌ Error de red en página {page}: {e}")
+            print(f"\n Error de red en página {page}: {e}")
             break
 
         if r.status_code != 200:
-            print(f"\n❌ Error {r.status_code} en página {page}")
+            print(f"\n Error {r.status_code} en página {page}")
             break
 
         payload = r.json()
@@ -1135,32 +1145,60 @@ def main():
     # --- CSV interfaz1 (ACTIVOS) ---
     if all_rows:
         df = pd.DataFrame(all_rows, columns=COLS)
-        pn_clean = df["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
-        df["_pn_num"] = pd.to_numeric(pn_clean, errors="coerce")
+        # Extraer SOLO la parte numérica del RUT (sin dígito verificador) para ordenar
+        def extract_rut_number(rut_str):
+            rut_str = str(rut_str).strip()
+            if not rut_str:
+                return 0
+            # Quitar el último carácter (dígito verificador) y convertir a número
+            # "65589729" → "6558972" → 6558972
+            # "10213754k" → "10213754" → 10213754
+            rut_sin_verificador = rut_str[:-1]
+            try:
+                return int(rut_sin_verificador)
+            except:
+                return 0
+       
+        df["_pn_num"] = df["Personnel Number"].apply(extract_rut_number)
         df = df.sort_values(
-            by=["_pn_num", "Personnel Number"],
+            by=["_pn_num"],
             na_position="last",
-            kind="mergesort"
-        ).drop(columns=["_pn_num"])
+            kind="stable"  # stable preserva el orden original en caso de empate
+        ).reset_index(drop=True)
+        df = df.drop(columns=["_pn_num"])
         df.to_csv(OUT_CSV_SEMI, index=False, sep=";", encoding="utf-8")
-        print(f"\n✅ Guardado {OUT_CSV_SEMI} con {len(df)} registros.")
+        print(f"\n Guardado {OUT_CSV_SEMI} con {len(df)} registros.")
     else:
-        print("\nℹ️ No se agregaron registros a interfaz1_apibuk.csv.")
+        print("\n No se agregaron registros a interfaz1_apibuk.csv.")
 
     # --- CSV interfaz2 (FINIQUITADOS en período CERRADO) ---
     if filtered_rows:
         df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
-        pn_clean_filtered = df_filtered["Personnel Number"].astype(str).str.replace(r"\D", "", regex=True)
-        df_filtered["_pn_num"] = pd.to_numeric(pn_clean_filtered, errors="coerce")
+        # Extraer SOLO la parte numérica del RUT (sin dígito verificador) para ordenar
+        def extract_rut_number(rut_str):
+            rut_str = str(rut_str).strip()
+            if not rut_str:
+                return 0
+            # Quitar el último carácter (dígito verificador) y convertir a número
+            # "65589729" → "6558972" → 6558972
+            # "10213754k" → "10213754" → 10213754
+            rut_sin_verificador = rut_str[:-1]
+            try:
+                return int(rut_sin_verificador)
+            except:
+                return 0
+       
+        df_filtered["_pn_num"] = df_filtered["Personnel Number"].apply(extract_rut_number)
         df_filtered = df_filtered.sort_values(
-            by=["_pn_num", "Personnel Number"],
+            by=["_pn_num"],
             na_position="last",
-            kind="mergesort"
-        ).drop(columns=["_pn_num"])
+            kind="stable"  # stable preserva el orden original en caso de empate
+        ).reset_index(drop=True)
+        df_filtered = df_filtered.drop(columns=["_pn_num"])
         df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
-        print(f"✅ Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
+        print(f" Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
     else:
-        print("ℹ️ No se agregaron registros a interfaz2_apibuk.csv.")
+        print("No se agregaron registros a interfaz2_apibuk.csv.")
 
     # --- resumen final ---
     print("\n===== RESUMEN =====")
