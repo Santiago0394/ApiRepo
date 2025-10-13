@@ -19,8 +19,11 @@ else:
 BASE = "https://deloitte-innomotics.buk.cl/api/v1/chile"
 PAGE_SIZE = 1000
 TIMEOUT = 20
-OUT_CSV_SEMI = os.path.join(BASE_DIR, "interfaz1_apibuk.csv")
-OUT_CSV_FILTERED = os.path.join(BASE_DIR, "interfaz2_apibuk.csv")
+
+# Generar nombres de archivo con fecha actual en formato ddmmaaaa
+fecha_actual = datetime.now().strftime("%d%m%Y")
+OUT_CSV_SEMI = os.path.join(BASE_DIR, f"Database_CL_{fecha_actual}.csv")
+OUT_CSV_FILTERED = os.path.join(BASE_DIR, f"Database_CL_BAJAS_{fecha_actual}.csv")
 
 # -------- Helpers --------
 PREFIXES = ["de la","de los","de las","del","de","van","von","da","di","do"]
@@ -83,7 +86,7 @@ COUNTRY_OF_BIRTH_MAP = {
     "GB": "GBR",
 }
 
-# -------- Mapeo de bancos chilenos --------
+# -------- Mapeo de bancos --------
 BANK_CODE_MAP = {
     "BCI": "16",
     "BICE": "28",
@@ -322,61 +325,6 @@ def get_from_attrs(emp, keys, prefer_job=False, date=False):
         return to_yyyymmdd(val)
     return "" if val is None else str(val).strip()
 
-def get_attr_values(emp, keys, prefer_job=False):
-    """Devuelve una lista con los valores crudos encontrados para las keys."""
-
-    def _search_all(dct):
-        if not isinstance(dct, dict):
-            return []
-        wanted = {_norm_key(x) for x in keys}
-        return [v for k, v in dct.items() if _norm_key(k) in wanted]
-
-    job = emp.get("current_job") or {}
-    job_ca = job.get("custom_attributes") or {}
-    emp_ca = emp.get("custom_attributes") or {}
-
-    values = []
-    if prefer_job:
-        values.extend(_search_all(job_ca))
-        values.extend(_search_all(emp_ca))
-    else:
-        values.extend(_search_all(emp_ca))
-        values.extend(_search_all(job_ca))
-    return values
-
-
-def _iter_attr_strings(value):
-    """Itera recursivamente valores potencialmente anidados y retorna strings."""
-    if value is None:
-        return
-    if isinstance(value, str):
-        yield value
-        return
-    if isinstance(value, (int, float, Decimal)):
-        yield str(value)
-        return
-    if isinstance(value, dict):
-        # Priorizar llaves comunes que almacenan el valor textual
-        for key in ("value", "Value", "label", "Label", "name", "Name", "text", "Text"):
-            if key in value:
-                yield from _iter_attr_strings(value[key])
-        return
-    if isinstance(value, (list, tuple, set)):
-        for item in value:
-            yield from _iter_attr_strings(item)
-        return
-
-def select_local_pay_level(emp):
-    """Selecciona el primer Local Pay Level válido según las reglas solicitadas."""
-
-    candidates = get_attr_values(emp, ["Local Pay Level"], prefer_job=True)
-    for candidate in candidates:
-        for text in _iter_attr_strings(candidate):
-            cleaned = str(text).strip()
-            if len(cleaned) > 10 and cleaned.upper() != "NOT_APPLICABLE":
-                return cleaned
-    return ""
-
 def find_any(emp, aliases, date=False):
     alias_norm = {_norm_key(a) for a in aliases}
     def _from(d):
@@ -405,82 +353,59 @@ def normalize_workforce_type(emp: dict) -> str:
 
 def determine_exit_reason(emp: dict, job: dict, company_exit_date: str) -> str:
     """
-    Determina el Exit Reason según las reglas de Siemens:
-    - Si Company Exit Date < 99991231 → Exit Reason es obligatorio
-    - Si Company Exit Date = 99991231 → Exit Reason debe estar vacío
-   
-    Analiza el JSON para extraer el valor correcto desde:
-    1. custom_attributes["Exit Reason"] (empleado o job)
-    2. termination_reason del job
+    Mapea termination_reason del API a códigos según tu tabla.
     """
-   
-    # Si el empleado está activo (Company Exit Date = 99991231), no debe tener Exit Reason
-    if company_exit_date == "99991231":
-        return ""
-   
-    # Si el empleado terminó (Company Exit Date < 99991231), Exit Reason es obligatorio
-   
-    # Mapeo de valores BUK a códigos Siemens
-    BUK_TO_SIEMENS_EXIT_REASON = {
-        # Valores más comunes en BUK
-        "renuncia": "01",                    # Voluntary Resignation
-        "voluntary_resignation": "01",      
-        "despido": "02",                     # Company Dismissal
-        "company_dismissal": "02",
-        "despido_empresa": "02",
-        "mutuo_acuerdo": "03",               # Mutual Consent
-        "mutual_consent": "03",
-        "transferencia": "04",               # Transfer to another Siemens Company
-        "transfer": "04",
-        "jubilacion": "05",                  # Retirement
-        "retirement": "05",
-        "muerte": "06",                      # Death
-        "death": "06",
-        "fin_contrato": "07",                # End Of Temporary Contract
-        "fin_servicio": "07",                # End Of Service
-        "end_temporary_contract": "07",
-        "end_contract": "07",
-        "desinversion": "08",                # Divesture
-        "divesture": "08",
-        # Valores especiales
-        "reset": "95",                       # Reset Entry
-        "reset_entry": "95",
-        "otros": "99",                       # Others
-        "other": "99",
-        "others": "99",
-        "": "99"                             # Default para valores vacíos cuando es obligatorio
-    }
-   
-    # 1. Buscar primero en custom_attributes del empleado y job
-    exit_reason_raw = get_from_attrs(emp, ["Exit Reason"], prefer_job=True)
-   
-    # 2. Si no hay en custom_attributes, buscar en termination_reason del job
-    if not exit_reason_raw:
-        exit_reason_raw = job.get("termination_reason")
-   
-    # 3. También buscar en el empleado raíz por si acaso
-    if not exit_reason_raw:
-        exit_reason_raw = emp.get("termination_reason")
-   
-    # Normalizar el valor (lower case, sin espacios)
-    exit_reason_clean = str(exit_reason_raw or "").lower().strip()
-   
-    # Mapear a código Siemens
-    siemens_code = BUK_TO_SIEMENS_EXIT_REASON.get(exit_reason_clean, "99")
-   
-    # Log para debugging cuando hay valores
-    #ebug_info = f"[DEBUG] Empleado DNI: {emp.get('document_number', 'N/A')}"
-    #rint(f"{debug_info} | Company Exit Date: {company_exit_date}")
-   
-   #if exit_reason_raw:
-    #   print(f"{debug_info} | 💡 Exit Reason encontrado: '{exit_reason_raw}' → '{siemens_code}'")
-   #elif company_exit_date != "99991231":
-    #   print(f"{debug_info} | ⚠️  Exit Reason faltante para empleado terminado → usando '99' (Others)")
-    #lse:
-     #  print(f"{debug_info} | ✅ Empleado activo → Exit Reason vacío (correcto)")
-   
-   #return siemens_code
+    # Obtener termination_reason del current_job
+    termination_reason = job.get("termination_reason", "")
+    
+    # Normalizar (lower case, sin espacios)
+    termination_reason_clean = str(termination_reason).lower().strip()
+    
+    # Mapear usando TERMINATION_REASON_MAP
+    exit_code = TERMINATION_REASON_MAP.get(termination_reason_clean)
+    
+    return exit_code
 
+def find_local_pay_level_long(emp: dict) -> str:
+    """
+    Busca dentro del array 'jobs' el campo 'Local Pay Level' que tenga
+    más de 9 caracteres y que no sea 'NOT_APPLICABLE'.
+    Retorna el primer valor encontrado que cumpla las condiciones.
+    """
+    jobs = emp.get("jobs", [])
+    
+    for job in jobs:
+        custom_attrs = job.get("custom_attributes", {})
+        local_pay_level = custom_attrs.get("Local Pay Level", "")
+        
+        # Convertir a string y hacer strip por si acaso
+        local_pay_level_str = str(local_pay_level).strip()
+        
+        if len(local_pay_level_str) > 9 and local_pay_level_str != "NOT_APPLICABLE":
+            return local_pay_level_str
+    
+    # Si no encuentra ninguno que cumpla las condiciones, retornar vacío
+    return ""
+
+
+TERMINATION_REASON_MAP = {
+    # Valores que se muestran en la api
+    "renuncia": "1",
+    "necesidades_empresa": "2", 
+    "mutuo_acuerdo": "3",
+    "vencimiento_plazo": "7",
+    "fin_servicio": "7",
+    "muerte": "6",
+    "no_concurrencia": "99",
+    "incumplimiento": "99",
+    "falta_probidad": "99",
+    
+    # valores que podrian aparecer mas adelante
+    "transferencia": "4",        
+    "retiro": "5",                
+    "divesture": "2", #Puede relacionarse a necesidades_empresa           
+    "reset_entry": "95",       
+}
 # ---------- Normalizador ASCII ----------
 def normalize_ascii(text: str) -> str:
     if text is None:
@@ -715,7 +640,7 @@ def build_employee_row(emp, filter_reason=None):
     else:
         # Si NO tiene guión, asumir que último carácter es verificador
         dni = dni_raw
-   
+    
     first_name = emp.get("first_name","").strip()
     first_name_first = first_name.split()[0] if first_name else ""  # solo primer nombre
     s1 = emp.get("surname") or emp.get("last_name","")
@@ -758,8 +683,9 @@ def build_employee_row(emp, filter_reason=None):
                      or get_from_attrs(emp, ["Entry Reason","Razón de entrada"], prefer_job=True) or "" )
     company_exit_date = to_yyyymmdd(job.get("end_date")) or "99991231"
 
-    # Exit Reason con lógica de validación basada en Company Exit Date
+    # Determinar Exit Reason según reglas
     exit_reason = determine_exit_reason(emp, job, company_exit_date)
+
     workforce_type = normalize_workforce_type(emp)
     mgmt_group = get_from_attrs(emp, ["Management Group"], prefer_job=True)
    
@@ -797,9 +723,9 @@ def build_employee_row(emp, filter_reason=None):
     functional_area = get_from_attrs(emp, ["Functional Area"], prefer_job=True)
     country_region = get_from_attrs(emp, ["Country/Region Sub Entity", "Country/Region"], prefer_job=True) or emp.get("country","")
     hr_service_area = get_from_attrs(emp, ["HR Service Area"], prefer_job=True)
-    local_pay_level = select_local_pay_level(emp)
+    local_pay_level = find_local_pay_level_long(emp)
     date_workfoce_type = company_entry_date
-   
+
     contract_date = company_entry_date
 
     # Base Pay: 2 decimales
@@ -924,7 +850,7 @@ def build_employee_row(emp, filter_reason=None):
     iban = get_from_attrs(emp, ["International Bank Account Number","IBAN"], prefer_job=True)
     payroll_area = get_from_attrs(emp, ["Payroll Area"], prefer_job=True)
     termination_date = handle_null_date(emp.get("current_job", {}).get("end_date"))
-    last_date_worked = get_from_attrs(emp, ["Last Date Worked"], prefer_job=True, date=True)
+    last_date_worked = to_yyyymmdd(job.get("end_date"))
     position = get_from_attrs(emp, ["Position"], prefer_job=True)
     legal_entity = get_from_attrs(emp, ["Legal Entity"], prefer_job=True)
 
@@ -1089,13 +1015,13 @@ def main():
     if period_closed_start and period_closed_end:
         print(f"Período CERRADO más reciente: {period_closed_start} a {period_closed_end}")
     else:
-        print(" No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
+        print("No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
 
     period_open_start, period_open_end = fetch_latest_open_period(session)
     if period_open_start and period_open_end:
         print(f"Período ABIERTO más reciente: {period_open_start} a {period_open_end}")
     else:
-        print(" No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
+        print("No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
 
     # --- contadores / progreso ---
     page = 1
@@ -1144,9 +1070,9 @@ def main():
             # progreso en línea (global si hay total, si no por página)
             processed_global += 1
             if expected_global:
-                msg = f"\r  ▶ Progreso global: {processed_global}/{expected_global} | página {page}: {i}/{page_total}"
+                msg = f"\r Progreso global: {processed_global}/{expected_global} | página {page}: {i}/{page_total}"
             else:
-                msg = f"\r  ▶ Progreso página {page}: {i}/{page_total}"
+                msg = f"\r Progreso página {page}: {i}/{page_total}"
             print(msg, end="", flush=True)
 
             # Detecta estado
@@ -1213,7 +1139,7 @@ def main():
                 return int(rut_sin_verificador)
             except:
                 return 0
-       
+        
         df["_pn_num"] = df["Personnel Number"].apply(extract_rut_number)
         df = df.sort_values(
             by=["_pn_num"],
@@ -1242,7 +1168,7 @@ def main():
                 return int(rut_sin_verificador)
             except:
                 return 0
-       
+        
         df_filtered["_pn_num"] = df_filtered["Personnel Number"].apply(extract_rut_number)
         df_filtered = df_filtered.sort_values(
             by=["_pn_num"],
@@ -1251,7 +1177,7 @@ def main():
         ).reset_index(drop=True)
         df_filtered = df_filtered.drop(columns=["_pn_num"])
         df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
-        print(f" Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
+        print(f"✅ Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
     else:
         print("No se agregaron registros a interfaz2_apibuk.csv.")
 
