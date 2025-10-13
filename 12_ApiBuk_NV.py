@@ -322,6 +322,61 @@ def get_from_attrs(emp, keys, prefer_job=False, date=False):
         return to_yyyymmdd(val)
     return "" if val is None else str(val).strip()
 
+def get_attr_values(emp, keys, prefer_job=False):
+    """Devuelve una lista con los valores crudos encontrados para las keys."""
+
+    def _search_all(dct):
+        if not isinstance(dct, dict):
+            return []
+        wanted = {_norm_key(x) for x in keys}
+        return [v for k, v in dct.items() if _norm_key(k) in wanted]
+
+    job = emp.get("current_job") or {}
+    job_ca = job.get("custom_attributes") or {}
+    emp_ca = emp.get("custom_attributes") or {}
+
+    values = []
+    if prefer_job:
+        values.extend(_search_all(job_ca))
+        values.extend(_search_all(emp_ca))
+    else:
+        values.extend(_search_all(emp_ca))
+        values.extend(_search_all(job_ca))
+    return values
+
+
+def _iter_attr_strings(value):
+    """Itera recursivamente valores potencialmente anidados y retorna strings."""
+    if value is None:
+        return
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, (int, float, Decimal)):
+        yield str(value)
+        return
+    if isinstance(value, dict):
+        # Priorizar llaves comunes que almacenan el valor textual
+        for key in ("value", "Value", "label", "Label", "name", "Name", "text", "Text"):
+            if key in value:
+                yield from _iter_attr_strings(value[key])
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_attr_strings(item)
+        return
+
+def select_local_pay_level(emp):
+    """Selecciona el primer Local Pay Level válido según las reglas solicitadas."""
+
+    candidates = get_attr_values(emp, ["Local Pay Level"], prefer_job=True)
+    for candidate in candidates:
+        for text in _iter_attr_strings(candidate):
+            cleaned = str(text).strip()
+            if len(cleaned) > 10 and cleaned.upper() != "NOT_APPLICABLE":
+                return cleaned
+    return ""
+
 def find_any(emp, aliases, date=False):
     alias_norm = {_norm_key(a) for a in aliases}
     def _from(d):
@@ -742,7 +797,7 @@ def build_employee_row(emp, filter_reason=None):
     functional_area = get_from_attrs(emp, ["Functional Area"], prefer_job=True)
     country_region = get_from_attrs(emp, ["Country/Region Sub Entity", "Country/Region"], prefer_job=True) or emp.get("country","")
     hr_service_area = get_from_attrs(emp, ["HR Service Area"], prefer_job=True)
-    local_pay_level = get_from_attrs(emp, ["Local Pay Level"], prefer_job=True, date=True)
+    local_pay_level = select_local_pay_level(emp)
     date_workfoce_type = company_entry_date
    
     contract_date = company_entry_date
