@@ -714,7 +714,7 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
       2) emp.custom_attributes['Local Pay Level']           (si es válido → devuelve)
       3) jobs[].custom_attributes['Local Pay Level']        (elige el del job más reciente por start_date)
       4) BÚSQUEDA PROFUNDA: recorre todo el dict/list y junta cualquier 'Local Pay Level' que aparezca en cualquier parte.
-         Aplica heurísticas para escoger el mejor: prefiere longitud > 9, que empiece con 'CL_', y la cadena más larga.
+         Aplica heurísticas para escoger el mejor: prioriza que empiece con 'CL_' y, en igualdad, la cadena más larga.
 
     Si return_debug=True, además devuelve info de cómo/desde dónde se obtuvo.
     """
@@ -726,8 +726,7 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
         s = str(v).strip()
         if not s or s.upper() == "NOT_APPLICABLE":
             return False
-        # Lo que pides como "correcto" siempre es largo. Mantengo el umbral >9.
-        return len(s) > 9
+        return True
 
     def _norm(s: str) -> str:
         # misma normalización que usas en _norm_key, ampliada con NBSP → espacio
@@ -834,11 +833,15 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
       4) deep-scan de todo el objeto (clave normalizada)
       5) derivar desde GRIP Position: 'CS-XX-YYY-ZZ09' -> 'CL_CSXXYYYZZ09' (con 'CL_' y sin '-')
       6) regex: primer string que parezca 'CL_' + >=7 chars mayúsculas/dígitos
+
+    A diferencia de la versión anterior, ya no exige que el valor tenga una
+    longitud mínima; basta con que exista y no sea "NOT_APPLICABLE".
     """
     def _is_valid(v):
-        if v is None: return False
+        if v is None:
+            return False
         s = str(v).strip()
-        return s and s.upper() != "NOT_APPLICABLE" and len(s) > 9
+        return s and s.upper() != "NOT_APPLICABLE"
 
     def _norm_key(s: str) -> str:
         s = "" if s is None else str(s)
