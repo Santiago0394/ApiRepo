@@ -1004,8 +1004,8 @@ def build_employee_row(emp, filter_reason=None):
     except:
         pass
    
-    # Standard Work Week: Jornada estándar legal en Chile (45 horas semanales)
-    standard_work_week = "45.00"  # ← Fijo según ley laboral chilena (Art. 22 Código del Trabajo)
+    # Standard Work Week: Debe ser igual a contractual weekly working time
+    standard_work_week =  contractual_weekly
 
     # Fechas laborales
     contract_analysis = analyze_employee_contracts(emp)
@@ -1024,11 +1024,8 @@ def build_employee_row(emp, filter_reason=None):
     mgmt_group = get_from_attrs(emp, ["Management Group"], prefer_job=True)
    
     # Date Management Group
-    date_senior_mgmt = get_from_attrs(emp, ["Date Management group"], prefer_job=True, date=True)
-    if date_senior_mgmt and date_senior_mgmt != "99991231":
-        date_mgmt_group = date_senior_mgmt
-    else:
-        date_mgmt_group = to_yyyymmdd(job.get("start_date"))
+    date_mgmt_group = get_from_attrs(emp, ["Date Management group"], prefer_job=True, date=True)
+
    
     are = get_from_attrs(emp, ["ARE"], prefer_job=True)
     loc_short = get_from_attrs(emp, ["Location / Office (short name)"], prefer_job=True) or emp.get("office_short_name","")
@@ -1113,7 +1110,9 @@ def build_employee_row(emp, filter_reason=None):
     eligibility_comp = get_from_attrs(emp, ["Eligibility for Compensation Planning"], prefer_job=True)
     grip_position = get_from_attrs(emp, ["GRIP Position"], prefer_job=True)
     sps_elig = get_from_attrs(emp, ["SPS_Eligibility"], prefer_job=True)
-    date_sps_elig = to_yyyymmdd(job.get("start_date"))
+
+    #Obtener la fecha desde current_job.custom_attributes si existe
+    date_sps_elig = get_from_attrs(emp, ["Date SPS_Eligibility"], prefer_job=True, date=True)
    
     total_target_cash_raw = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
     total_target_cash = ""
