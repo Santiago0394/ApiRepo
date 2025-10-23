@@ -835,13 +835,14 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
       6) regex: primer string que parezca 'CL_' + >=7 chars mayúsculas/dígitos
 
     A diferencia de la versión anterior, ya no exige que el valor tenga una
-    longitud mínima; basta con que exista y no sea "NOT_APPLICABLE".
+    longitud mínima; basta con que exista, respetando "NOT_APPLICABLE" como valor
+    válido en las fuentes prioritarias.
     """
     def _is_valid(v):
         if v is None:
             return False
         s = str(v).strip()
-        return s and s.upper() != "NOT_APPLICABLE"
+        return s != ""
 
     def _norm_key(s: str) -> str:
         s = "" if s is None else str(s)
