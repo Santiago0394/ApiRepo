@@ -1000,6 +1000,9 @@ def build_employee_row(emp, filter_reason=None):
                           or str(job.get("contract_type") or "").strip() )
    
     contract_type_code = map_contract_type_code(contract_type_raw)
+    contract_type_clean = ""
+    if contract_type_raw is not None:
+        contract_type_clean = normalize_ascii(str(contract_type_raw)).strip().lower()
     contract_status = map_contract_status_code(emp)
     contractual_weekly = str(job.get("weekly_hours") or "").strip()
     try:
@@ -1019,7 +1022,25 @@ def build_employee_row(emp, filter_reason=None):
    
     entry_reason = ( job.get("entry_reason")
                      or get_from_attrs(emp, ["Entry Reason","Razón de entrada"], prefer_job=True) or "" )
-    company_exit_date = to_yyyymmdd(job.get("end_date")) or "99991231"
+    contract_finishing_date = get_from_attrs(
+        emp,
+        [
+            "contract_finishing_date_1",
+            "Contract Finishing Date 1",
+            "Fecha termino contrato",
+            "Fecha término contrato",
+            "Fin contrato",
+        ],
+        prefer_job=True,
+        date=True,
+    )
+
+    company_exit_date = to_yyyymmdd(job.get("end_date"))
+    if not company_exit_date:
+        if "fijo" in contract_type_clean:
+            company_exit_date = contract_finishing_date or "99991231"
+        else:
+            company_exit_date = "99991231"
 
     # Determinar Exit Reason según reglas
     exit_reason = determine_exit_reason(emp, job, company_exit_date)
