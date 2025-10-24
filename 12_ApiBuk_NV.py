@@ -313,13 +313,15 @@ def get_from_attrs(emp, keys, prefer_job=False, date=False):
     emp_ca = emp.get("custom_attributes") or {}
 
     if prefer_job:
-        val = _search(job_ca)
-        if val is None:
-            val = _search(emp_ca)
+        sources = (job_ca, job, emp_ca, emp)
     else:
-        val = _search(emp_ca)
-        if val is None:
-            val = _search(job_ca)
+        sources = (emp_ca, emp, job_ca, job)
+
+    val = None
+    for src in sources:
+        val = _search(src)
+        if val is not None:
+            break
 
     if date:
         return to_yyyymmdd(val)
