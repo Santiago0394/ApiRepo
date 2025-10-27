@@ -1167,10 +1167,8 @@ def build_employee_row(emp, filter_reason=None):
             total_target_cash = ""
     date_total_target_cash = get_from_attrs(emp, ["Date Total Target Cash"], prefer_job=True, date=True)
 
-    private_email = (
-        get_from_attrs(emp, ["Private E-mail Address","Private Email Address","Correo personal","Email personal"], prefer_job=False)
-        or emp.get("personal_email") or emp.get("private_email") or ""
-    )
+    private_email = (emp.get("email") or "").strip()
+
     private_mobile = (
         get_from_attrs(emp, ["Private Mobile Phone Number","Private Phone","Mobile personal","Celular personal"], prefer_job=False)
         or emp.get("personal_mobile") or emp.get("private_mobile") or emp.get("mobile") or emp.get("cellphone") or emp.get("phone") or ""
