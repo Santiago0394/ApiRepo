@@ -961,7 +961,7 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
 
 
 
-def build_employee_row(emp, filter_reason=None):
+def build_employee_row(emp, filter_reason=None, *, is_active=False):
     """
     Construye una fila completa para un empleado.
     Si filter_reason se proporciona, se agrega como columna adicional.
@@ -1046,6 +1046,8 @@ def build_employee_row(emp, filter_reason=None):
 
     # Determinar Exit Reason según reglas
     exit_reason = determine_exit_reason(emp, job, company_exit_date)
+    if is_active and "fijo" in contract_type_clean:
+        exit_reason = "7"
 
     workforce_type = normalize_workforce_type(emp)
     mgmt_group = get_from_attrs(emp, ["Management Group"], prefer_job=True)
@@ -1209,6 +1211,11 @@ def build_employee_row(emp, filter_reason=None):
     payroll_area = get_from_attrs(emp, ["Payroll Area"], prefer_job=True)
     termination_date = handle_null_date(emp.get("current_job", {}).get("end_date"))
     last_date_worked = to_yyyymmdd(job.get("end_date"))
+    if is_active:
+        if "fijo" in contract_type_clean:
+            last_date_worked = contract_finishing_date or "99991231"
+        else:
+            last_date_worked = "99991231"
     position = get_from_attrs(emp, ["Position"], prefer_job=True)
     legal_entity = get_from_attrs(emp, ["Legal Entity"], prefer_job=True)
 
@@ -1458,7 +1465,7 @@ def main():
             if not is_valid_date(date_sps_elig, "20220731"):
                 continue
 
-            rows_activos.append(build_employee_row(emp))
+            rows_activos.append(build_employee_row(emp, is_active=True))
             added_activos_page += 1
 
         # fin de página
