@@ -6,7 +6,7 @@ import unicodedata
 import getpass
 import requests, pandas as pd
 from requests.adapters import HTTPAdapter, Retry
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 # -------- Dónde guardar el CSV (junto al .exe si está congelado) --------
@@ -1368,12 +1368,11 @@ def main():
         "Connection": "keep-alive",
     })
 
-    # --- períodos para filtros ---
-    period_closed_start, period_closed_end = fetch_latest_closed_period(session)
-    if period_closed_start and period_closed_end:
-        print(f"Período CERRADO más reciente: {period_closed_start} a {period_closed_end}")
-    else:
-        print("No se encontró período 'cerrado'. 'interfaz2_apibuk.csv' quedará vacío.")
+    # --- ventanas de fechas ---
+    now = datetime.now()
+    bajas_today = now.strftime("%Y%m%d")
+    bajas_cutoff = (now - timedelta(days=30)).strftime("%Y%m%d")
+    print(f"Bajas consideradas desde {bajas_cutoff} hasta {bajas_today}.")
 
     period_open_start, period_open_end = fetch_latest_open_period(session)
     if period_open_start and period_open_end:
@@ -1384,7 +1383,7 @@ def main():
     # --- contadores / progreso ---
     page = 1
     all_rows = []       # interfaz1 (activos válidos dentro de período ABIERTO)
-    filtered_rows = []  # interfaz2 (finiquitados dentro de período CERRADO)
+    filtered_rows = []  # interfaz2 (finiquitados últimos 30 días)
     total_added_activos = 0
     total_added_fini = 0
     processed_global = 0
@@ -1436,20 +1435,16 @@ def main():
             # Detecta estado
             employee_status = analyze_employee_status(emp)
 
-            # (A) FINIQUITADOS -> interfaz2 si end_date ∈ [periodo cerrado]
+            # (A) FINIQUITADOS -> interfaz2 si end_date está dentro de la ventana de 30 días
             if employee_status["destination"] == "filtered":
-                if period_closed_start and period_closed_end and end_date:
-                    if period_closed_start <= end_date <= period_closed_end:
-                        filtered_rows.append(build_employee_row(emp))
-                        added_fini_page += 1
+                if end_date and bajas_cutoff <= end_date <= bajas_today:
+                    filtered_rows.append(build_employee_row(emp))
+                    added_fini_page += 1
                 continue  # no evaluar reglas de activos
 
-            # (B) ACTIVOS -> interfaz1 si end_date es NULL y estaban activos en período ABIERTO
-            if period_open_start and period_open_end:
-                is_active_now = (end_date in (None, "", "00000000"))
-                started_in_or_before_period = (start_date and start_date <= period_open_end)
-                if not (is_active_now and started_in_or_before_period):
-                    continue
+            # (B) ACTIVOS -> interfaz1 si analyze_employee_status indica activo (sin validar período)
+            if not employee_status["is_active"]:
+                continue
 
             # Filtros ≥ 20220801 (los que ya tenías)
             contract_analysis = analyze_employee_contracts(emp)
@@ -1458,13 +1453,9 @@ def main():
             date_contract_status = start_date
             date_sps_elig = start_date
 
-            if not is_valid_date(company_entry_date, "20220801"):
+            if not is_valid_date(date_contract_status, "20220731"):
                 continue
-            if not is_valid_date(service_date, "20220801"):
-                continue
-            if not is_valid_date(date_contract_status, "20220801"):
-                continue
-            if not is_valid_date(date_sps_elig, "20220801"):
+            if not is_valid_date(date_sps_elig, "20220731"):
                 continue
 
             rows_activos.append(build_employee_row(emp))
