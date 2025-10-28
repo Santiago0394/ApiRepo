@@ -3,6 +3,7 @@ import os
 import sys
 import re
 import unicodedata
+import json
 import getpass
 import requests, pandas as pd
 from requests.adapters import HTTPAdapter, Retry
@@ -24,6 +25,7 @@ TIMEOUT = 20
 fecha_actual = datetime.now().strftime("%d%m%Y")
 OUT_CSV_SEMI = os.path.join(BASE_DIR, f"Database_CL_{fecha_actual}.csv")
 OUT_CSV_FILTERED = os.path.join(BASE_DIR, f"Database_CL_BAJAS_{fecha_actual}.csv")
+STATE_FILE = os.path.join(BASE_DIR, "bajas_state.json")
 
 # -------- Helpers --------
 PREFIXES = ["de la","de los","de las","del","de","van","von","da","di","do"]
@@ -102,6 +104,29 @@ BANK_CODE_MAP = {
     "BBVA": "504",
     "Consorcio": "55"
 }
+
+def load_bajas_state() -> dict:
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+def save_bajas_state(last_end_date: str) -> None:
+    payload = {
+        "last_end_date": last_end_date,
+        "saved_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"No se pudo guardar el estado de bajas: {e}")
 
 def fetch_latest_open_period(session) -> tuple[str, str]:
     """
@@ -1381,6 +1406,13 @@ def main():
     bajas_cutoff = (now - timedelta(days=30)).strftime("%Y%m%d")
     print(f"Bajas consideradas desde {bajas_cutoff} hasta {bajas_today}.")
 
+    state = load_bajas_state()
+    last_exported_end_date = str(state.get("last_end_date") or "").strip()
+    if last_exported_end_date:
+        print(f"Última fecha de baja exportada previamente: {last_exported_end_date}")
+    else:
+        print("No existe registro previo de bajas exportadas.")
+
     period_open_start, period_open_end = fetch_latest_open_period(session)
     if period_open_start and period_open_end:
         print(f"Período ABIERTO más reciente: {period_open_start} a {period_open_end}")
@@ -1395,6 +1427,7 @@ def main():
     total_added_fini = 0
     processed_global = 0
     expected_global = None  # lo intento leer de payload['pagination']['count']
+    max_new_end_date = last_exported_end_date
 
     while True:
         url = f"{BASE}/employees?page_size={PAGE_SIZE}&page={page}"
@@ -1445,8 +1478,12 @@ def main():
             # (A) FINIQUITADOS -> interfaz2 si end_date está dentro de la ventana de 30 días
             if employee_status["destination"] == "filtered":
                 if end_date and bajas_cutoff <= end_date <= bajas_today:
+                    if last_exported_end_date and end_date <= last_exported_end_date:
+                        continue
                     filtered_rows.append(build_employee_row(emp))
                     added_fini_page += 1
+                    if not max_new_end_date or end_date > max_new_end_date:
+                        max_new_end_date = end_date
                 continue  # no evaluar reglas de activos
 
             # (B) ACTIVOS -> interfaz1 si analyze_employee_status indica activo (sin validar período)
@@ -1509,8 +1546,8 @@ def main():
         print("\n No se agregaron registros a interfaz1_apibuk.csv.")
 
     # --- CSV interfaz2 (FINIQUITADOS en período CERRADO) ---
-    if filtered_rows:
-        df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
+    df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
+    if not df_filtered.empty:
         # Extraer SOLO la parte numérica del RUT (sin dígito verificador) para ordenar
         def extract_rut_number(rut_str):
             rut_str = str(rut_str).strip()
@@ -1532,10 +1569,16 @@ def main():
             kind="stable"  # stable preserva el orden original en caso de empate
         ).reset_index(drop=True)
         df_filtered = df_filtered.drop(columns=["_pn_num"])
-        df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
-        print(f"✅ Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
     else:
-        print("No se agregaron registros a interfaz2_apibuk.csv.")
+        print("No se detectaron bajas en el rango; se generara archivo vacio.")
+    df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
+    print(f"Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
+
+    if max_new_end_date and max_new_end_date != last_exported_end_date:
+        save_bajas_state(max_new_end_date)
+        print(f"Estado de bajas actualizado hasta {max_new_end_date}.")
+    elif not filtered_rows and last_exported_end_date:
+        print("No se detectaron bajas nuevas desde la última ejecución.")
 
     # --- resumen final ---
     print("\n===== RESUMEN =====")
