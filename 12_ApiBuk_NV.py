@@ -273,14 +273,37 @@ def analyze_employee_status(emp):
         }
 
 def to_yyyymmdd(val):
-    if not val: return ""
-    if isinstance(val, datetime): return val.strftime("%Y%m%d")
+    if not val:
+        return ""
+    if isinstance(val, datetime):
+        return val.strftime("%Y%m%d")
     s = str(val).strip()
-    if len(s) == 8 and s.isdigit(): return s
-    for fmt in ("%Y-%m-%d","%d/%m/%Y","%Y/%m/%d","%d-%m-%Y"):
+    if not s:
+        return ""
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+    if match:
+        return "".join(match.groups())
+    match = re.match(r"^(\d{4})-(\d{2})$", s)
+    if match:
+        year, month = match.groups()
+        return f"{year}{month}31"
+    if len(s) == 8 and s.isdigit():
+        return s
+    if "T" in s or s.endswith("Z"):
+        truncated = re.split(r"[T ]", s, 1)[0]
+        if len(truncated) == 8 and truncated.isdigit():
+            return truncated
+        try:
+            iso_candidate = s
+            if iso_candidate.endswith("Z"):
+                iso_candidate = iso_candidate[:-1] + "+00:00"
+            return datetime.fromisoformat(iso_candidate).strftime("%Y%m%d")
+        except ValueError:
+            s = truncated
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
         try:
             return datetime.strptime(s, fmt).strftime("%Y%m%d")
-        except:
+        except Exception:
             pass
     return ""
 
