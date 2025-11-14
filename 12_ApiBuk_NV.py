@@ -94,7 +94,7 @@ BANK_CODE_MAP = {
     "BICE": "28",
     "Banco de Chile": "1",
     "COOPEUCH": "672",
-    "Banco Estado": "2",
+    "Banco Estado": "12",
     "Falabella": "51",
     "Ripley": "53",
     "Santander": "37",
@@ -102,7 +102,8 @@ BANK_CODE_MAP = {
     "Security": "49",
     "Itau": "39",
     "BBVA": "504",
-    "Consorcio": "55"
+    "Consorcio": "55",
+    "Corpbanca": "27"
 }
 
 def load_bajas_state() -> dict:
@@ -306,6 +307,18 @@ def to_yyyymmdd(val):
         except Exception:
             pass
     return ""
+
+def add_one_day_yyyymmdd(date_str: str) -> str:
+    """
+    Suma un día a una fecha YYYYMMDD. Mantiene valores especiales como 99991231 sin cambios.
+    """
+    s = (date_str or "").strip()
+    if len(s) != 8 or not s.isdigit() or s == "99991231":
+        return s
+    try:
+        return (datetime.strptime(s, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+    except ValueError:
+        return s
 
 def _norm_country(value: str) -> str:
     if not value: return ""
@@ -1174,9 +1187,11 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
 
     date_local_job_title = get_from_attrs(emp, ["Date Local Job Title"], prefer_job=True, date=True)
     depth_structure = get_from_attrs(emp, ["Depth Structure"], prefer_job=True)
-    date_gpm_status = date_contract_status or get_from_attrs(emp, ["Date GPM Status"], prefer_job=True, date=True)
     gpm_exit_status = get_from_attrs(emp, ["GPM Exit Status"], prefer_job=True)
     date_base_pay = get_from_attrs(emp, ["Date Base Pay"], prefer_job=True, date=True)
+    # Columnas BI y BK deben reflejar exactamente Date Base Pay (columna BL)
+    date_gpm_status = date_base_pay
+    date_contract_status = date_base_pay
     date_target_incentive_amount = get_from_attrs(emp, ["Date Target Incentive Amount"], prefer_job=True, date=True)
     global_cost_center = get_from_attrs(emp, ["Global Cost Center"], prefer_job=True)
 
@@ -1189,7 +1204,8 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     sps_elig = get_from_attrs(emp, ["SPS_Eligibility"], prefer_job=True)
 
     #Obtener la fecha desde current_job.custom_attributes si existe
-    date_sps_elig = get_from_attrs(emp, ["Date SPS_Eligibility"], prefer_job=True, date=True)
+    # La columna BU debe replicar Date Base Pay
+    date_sps_elig = date_base_pay
    
     total_target_cash_raw = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
     total_target_cash = ""
@@ -1264,6 +1280,9 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
             last_date_worked = contract_finishing_date or "99991231"
         else:
             last_date_worked = "99991231"
+        termination_date = last_date_worked
+    last_date_worked = add_one_day_yyyymmdd(last_date_worked)
+    termination_date = last_date_worked
     position = get_from_attrs(emp, ["Position"], prefer_job=True)
     legal_entity = get_from_attrs(emp, ["Legal Entity"], prefer_job=True)
 
