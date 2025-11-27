@@ -9,28 +9,24 @@ import requests, pandas as pd
 from requests.adapters import HTTPAdapter, Retry
 from datetime import datetime, timedelta
 from decimal import Decimal
-
 # -------- Dónde guardar el CSV (junto al .exe si está congelado) --------
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 # -------- Config --------
 BASE = "https://deloitte-innomotics.buk.cl/api/v1/chile"
 PAGE_SIZE = 1000
 TIMEOUT = 20
-
+MIN_ENTRY_DATE = "20220801"
 # Generar nombres de archivo con fecha actual en formato ddmmaaaa
 fecha_actual = datetime.now().strftime("%d%m%Y")
 OUT_CSV_SEMI = os.path.join(BASE_DIR, f"Database_CL_{fecha_actual}.csv")
 OUT_CSV_FILTERED = os.path.join(BASE_DIR, f"Database_CL_BAJAS_{fecha_actual}.csv")
 STATE_FILE = os.path.join(BASE_DIR, "bajas_state.json")
-
 # -------- Helpers --------
 PREFIXES = ["de la","de los","de las","del","de","van","von","da","di","do"]
 SUFFIXES = {"jr","sr","iii","iv","v"}
-
 COUNTRY_OF_BIRTH_MAP = {
     "DE": "DEU",
     "AR": "ARG",
@@ -87,7 +83,6 @@ COUNTRY_OF_BIRTH_MAP = {
     "HR": "HRV",
     "GB": "GBR",
 }
-
 # -------- Mapeo de bancos --------
 BANK_CODE_MAP = {
     "BCI": "16",
@@ -105,7 +100,6 @@ BANK_CODE_MAP = {
     "Consorcio": "55",
     "Corpbanca": "27"
 }
-
 def load_bajas_state() -> dict:
     if not os.path.exists(STATE_FILE):
         return {}
@@ -117,7 +111,6 @@ def load_bajas_state() -> dict:
     except Exception:
         pass
     return {}
-
 def save_bajas_state(last_end_date: str) -> None:
     payload = {
         "last_end_date": last_end_date,
@@ -128,7 +121,6 @@ def save_bajas_state(last_end_date: str) -> None:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"No se pudo guardar el estado de bajas: {e}")
-
 def fetch_latest_open_period(session) -> tuple[str, str]:
     """
     Devuelve (start_yyyymmdd, end_yyyymmdd) del período 'abierto' más reciente.
@@ -141,7 +133,6 @@ def fetch_latest_open_period(session) -> tuple[str, str]:
     except Exception as e:
         print(f"⚠️ No se pudo obtener process_periods (abierto): {e}")
         return "", ""
-
     payload = r.json()
     items = payload.get("data", payload) or []
     abiertos = []
@@ -151,14 +142,10 @@ def fetch_latest_open_period(session) -> tuple[str, str]:
             end   = to_yyyymmdd(it.get("end_date"))
             if start and end:
                 abiertos.append((start, end))
-
     if not abiertos:
         return "", ""
-
     abiertos.sort(key=lambda t: t[1])  # más reciente por end_date
     return abiertos[-1]
-
-
 def fetch_latest_closed_period(session) -> tuple[str, str]:
     """
     Llama a /process_periods y devuelve (start_yyyymmdd, end_yyyymmdd)
@@ -171,7 +158,6 @@ def fetch_latest_closed_period(session) -> tuple[str, str]:
     except Exception as e:
         print(f"⚠️ No se pudo obtener process_periods: {e}")
         return "", ""
-
     payload = r.json()
     items = payload.get("data", payload) or []
     cerrados = []
@@ -181,15 +167,11 @@ def fetch_latest_closed_period(session) -> tuple[str, str]:
             end   = to_yyyymmdd(it.get("end_date"))
             if start and end:
                 cerrados.append((start, end))
-
     if not cerrados:
         return "", ""
-
     # más reciente = el de mayor end_date
     cerrados.sort(key=lambda t: t[1])  # ordena por end
     return cerrados[-1]
-
-
 def split_prefix_suffix(surname_full):
     s = (surname_full or "").strip()
     if not s: return "",""
@@ -204,7 +186,6 @@ def split_prefix_suffix(surname_full):
     if last in SUFFIXES:
         suf = s.split()[-1]
     return pref, suf
-
 def map_bank_code(bank_name):
     """
     Mapea el nombre del banco chileno al código numérico correspondiente.
@@ -232,47 +213,106 @@ def map_bank_code(bank_name):
    
     # Si no se encuentra, devolver el valor original
     return bank_clean
-
 def map_gender(val):
     if not val: return ""
     v = str(val).strip().lower()
     if v in ("m","male","masculino","hombre"): return 1
     if v in ("f","female","femenino","mujer"): return 2
     return ""
+def _collect_jobs(emp: dict) -> list:
+    """Devuelve todos los jobs conocidos (current_job y jobs[]), solo los diccionarios válidos."""
+    jobs = []
+    current_job = emp.get("current_job")
+    if isinstance(current_job, dict):
+        jobs.append(current_job)
+    elif isinstance(current_job, list):
+        jobs.extend([j for j in current_job if isinstance(j, dict)])
+    for jb in emp.get("jobs") or []:
+        if isinstance(jb, dict):
+            jobs.append(jb)
+    return jobs
+def _job_status_flags(emp: dict) -> tuple[bool, str]:
+    """
+    Indica si existe algún job abierto (end_date vacío) y la end_date cerrada más reciente (YYYYMMDD).
+    """
+    has_open_job = False
+    latest_end_date = ""
+    for jb in _collect_jobs(emp):
+        end = to_yyyymmdd(jb.get("end_date"))
+        if not end:
+            has_open_job = True
+        elif end > latest_end_date:
+            latest_end_date = end
+    return has_open_job, latest_end_date
+
+def _active_until_flags(emp: dict) -> tuple[bool, str]:
+    """
+    Revisa todos los active_until (empleado y jobs) y devuelve:
+    - True si algun active_until viene null/vacio.
+    - La fecha mas reciente encontrada en formato YYYYMMDD.
+    """
+    has_null = False
+    latest_active_until = ""
+    def _consider(value):
+        nonlocal has_null, latest_active_until
+        if value is None:
+            has_null = True
+            return
+        s = str(value).strip()
+        if s == "":
+            return
+        parsed = to_yyyymmdd(s)
+        if parsed and parsed > latest_active_until:
+            latest_active_until = parsed
+    if "active_until" in emp:
+        _consider(emp.get("active_until"))
+    for jb in _collect_jobs(emp):
+        if "active_until" in jb:
+            _consider(jb.get("active_until"))
+    return has_null, latest_active_until
+ 
+def _norm_rut(emp: dict) -> str:
+    """Normaliza rut/document_number sin puntos ni guiones para comparar duplicados."""
+    raw = emp.get("rut") or emp.get("dni") or emp.get("document_number") or ""
+    return re.sub(r"[^0-9a-zA-Z]", "", str(raw)).lower().strip()
+ 
+def analyze_employee_status(emp):
+    """
+    - Si cualquier job no tiene end_date -> activo
+    - Si status es activo -> activo (aunque no lleguen jobs abiertos)
+    - Si ninguno est� abierto -> baja usando la end_date m�s reciente
+    """
+    status = str(emp.get("status", "")).lower()
+    is_status_active = status in {"activo", "active", "activa"}
+    has_open_job, latest_end_date = _job_status_flags(emp)
+    if has_open_job or is_status_active:
+        return {"is_active": True, "end_date": None, "destination": "active"}
+    if latest_end_date:
+        return {"is_active": False, "end_date": latest_end_date, "destination": "filtered"}
+    return {"is_active": True, "end_date": None, "destination": "active"}
 
 def analyze_employee_status(emp):
     """
-    LÓGICA SIMPLIFICADA:
-    - Si tiene end_date → va al archivo FILTRADO
-    - Si NO tiene end_date → va al archivo ACTIVOS
-   
-    Args:
-        emp: Diccionario con datos del empleado
-       
-    Returns:
-        dict: {
-            "is_active": bool,
-            "end_date": str or None,
-            "destination": "active" or "filtered"
-        }
+    Usa active_until para decidir la salida:
+    - Si cualquier active_until esta null/vacio -> activo.
+    - Si ninguno es null y hay fechas -> baja con la mas reciente.
+    - Si no hay active_until disponibles, se usa la logica anterior con end_date/status.
     """
-    job = emp.get("current_job") or {}
-    end_date = job.get("end_date")
-   
-    # Lógica simple: tiene end_date = filtrado, no tiene = activo
-    if end_date:
-        return {
-            "is_active": False,
-            "end_date": end_date,
-            "destination": "filtered"
-        }
-    else:
-        return {
-            "is_active": True,
-            "end_date": None,
-            "destination": "active"
-        }
+    status = str(emp.get("status", "")).lower()
+    is_status_active = status in {"activo", "active", "activa"}
+    has_null_active_until, latest_active_until = _active_until_flags(emp)
 
+    if has_null_active_until:
+        return {"is_active": True, "end_date": None, "destination": "active"}
+    if latest_active_until:
+        return {"is_active": False, "end_date": latest_active_until, "destination": "filtered"}
+
+    has_open_job, latest_end_date = _job_status_flags(emp)
+    if has_open_job or is_status_active:
+        return {"is_active": True, "end_date": None, "destination": "active"}
+    if latest_end_date:
+        return {"is_active": False, "end_date": latest_end_date, "destination": "filtered"}
+    return {"is_active": True, "end_date": None, "destination": "active"}
 def to_yyyymmdd(val):
     if not val:
         return ""
@@ -307,7 +347,6 @@ def to_yyyymmdd(val):
         except Exception:
             pass
     return ""
-
 def add_one_day_yyyymmdd(date_str: str) -> str:
     """
     Suma un día a una fecha YYYYMMDD. Mantiene valores especiales como 99991231 sin cambios.
@@ -319,7 +358,6 @@ def add_one_day_yyyymmdd(date_str: str) -> str:
         return (datetime.strptime(s, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
     except ValueError:
         return s
-
 def _norm_country(value: str) -> str:
     if not value: return ""
     v = str(value).strip().upper()
@@ -327,13 +365,11 @@ def _norm_country(value: str) -> str:
         return "CL"
     if len(v) == 2 and v.isalpha(): return v
     return v[:2]
-
 def map_country_of_birth(value) -> str:
     if not value:
         return ""
     code = str(value).strip().upper()
     return COUNTRY_OF_BIRTH_MAP.get(code, code)
-
 def nationality_codes(emp, ca):
     nats = emp.get("nationalities")
     if isinstance(nats, list) and nats:
@@ -348,7 +384,6 @@ def nationality_codes(emp, ca):
     ca2 = ca.get("Nationality 2") or ca.get("nationality_2")
     ca3 = ca.get("Nationality 3") or ca.get("nationality_3")
     return _norm_country(ca1), _norm_country(ca2), _norm_country(ca3)
-
 def _norm_key(s: str) -> str:
     if s is None: return ""
     s = s.lower()
@@ -357,7 +392,6 @@ def _norm_key(s: str) -> str:
     for ch in ("-", "_"):
         s = s.replace(ch, " ")
     return " ".join(s.split())
-
 # -------- FIX: conservar ceros (evitar perder 0 con `or`) --------
 def get_from_attrs(emp, keys, prefer_job=False, date=False):
     def _search(dct):
@@ -368,26 +402,21 @@ def get_from_attrs(emp, keys, prefer_job=False, date=False):
             if _norm_key(k) in wanted:
                 return v
         return None
-
     job = emp.get("current_job") or {}
     job_ca = job.get("custom_attributes") or {}
     emp_ca = emp.get("custom_attributes") or {}
-
     if prefer_job:
         sources = (job_ca, job, emp_ca, emp)
     else:
         sources = (emp_ca, emp, job_ca, job)
-
     val = None
     for src in sources:
         val = _search(src)
         if val is not None:
             break
-
     if date:
         return to_yyyymmdd(val)
     return "" if val is None else str(val).strip()
-
 def find_any(emp, aliases, date=False):
     alias_norm = {_norm_key(a) for a in aliases}
     def _from(d):
@@ -403,7 +432,6 @@ def find_any(emp, aliases, date=False):
     if v is None: v = _from((emp.get("current_job") or {}).get("custom_attributes") or {})
     v = "" if v is None else str(v).strip()
     return to_yyyymmdd(v) if date else v
-
 def normalize_workforce_type(emp: dict) -> str:
     raw_num = get_from_attrs(emp, ["Workforce Type"], prefer_job=True)
     if str(raw_num).strip().isdigit():
@@ -413,7 +441,6 @@ def normalize_workforce_type(emp: dict) -> str:
     if s in {"GASTO", "GASTOS"}: return "1"
     if s in {"COSTO", "COSTOS"}: return "2"
     return ""
-
 def determine_exit_reason(emp: dict, job: dict, company_exit_date: str) -> str:
     """
     Mapea termination_reason del API a códigos según tu tabla.
@@ -428,7 +455,6 @@ def determine_exit_reason(emp: dict, job: dict, company_exit_date: str) -> str:
     exit_code = TERMINATION_REASON_MAP.get(termination_reason_clean)
     
     return exit_code
-
 def find_local_pay_level(emp: dict) -> str:
     """
     Obtiene 'Local Pay Level' priorizando:
@@ -438,22 +464,18 @@ def find_local_pay_level(emp: dict) -> str:
     Evita valores vacíos o 'NOT_APPLICABLE'.
     """
     aliases = ["Local Pay Level", "Local pay level", "Local PayLevel", "Pay Level", "Pay level"]
-
     # 1) current_job.custom_attributes (prefer_job=True ya mira job_ca primero)
     v = get_from_attrs(emp, aliases, prefer_job=True)
     if v and v.upper() != "NOT_APPLICABLE":
         return v.strip()
-
     # 2) emp.custom_attributes
     v = get_from_attrs(emp, aliases, prefer_job=False)
     if v and v.upper() != "NOT_APPLICABLE":
         return v.strip()
-
     # 3) jobs[]: elegir el valor del job más reciente por start_date
     best = ""
     best_date = ""
     alias_norm = {_norm_key(a) for a in aliases}
-
     for job in (emp.get("jobs") or []):
         ca = job.get("custom_attributes") or {}
         candidate = None
@@ -461,7 +483,6 @@ def find_local_pay_level(emp: dict) -> str:
             if _norm_key(k) in alias_norm:
                 candidate = str(val).strip()
                 break
-
         if candidate and candidate.upper() != "NOT_APPLICABLE":
             d = to_yyyymmdd(job.get("start_date"))
             # Prefiere el job con start_date más reciente; si no hay fecha, usa el primero válido
@@ -469,19 +490,13 @@ def find_local_pay_level(emp: dict) -> str:
                 best, best_date = candidate, d
             elif not best:
                 best = candidate
-
     if best:
         return best.strip()
-
     # 4) Último recurso: buscar en estructuras planas
     v = find_any(emp, aliases)
     if v and v.upper() != "NOT_APPLICABLE":
         return v.strip()
-
     return ""
-
-
-
 TERMINATION_REASON_MAP = {
     # Valores que se muestran en la api
     "renuncia": "1",
@@ -513,10 +528,8 @@ def normalize_ascii(text: str) -> str:
     t = unicodedata.normalize("NFKD", t).encode("ascii","ignore").decode("ascii")
     t = re.sub(r"\s+"," ", t).strip()
     return t
-
 def normalize_row_text(row: dict) -> dict:
     return {k: (normalize_ascii(v) if isinstance(v, str) else v) for k, v in row.items()}
-
 def map_contract_type_code(value) -> str:
     if value is None:
         return ""
@@ -527,7 +540,6 @@ def map_contract_type_code(value) -> str:
     if "fijo" in s or "plazo" in s or "temporal" in s or "fixed" in s or "term" in s or s == "t":
         return "T"
     return ""
-
 def convert_to_chl_code(contract_type_code):
     """Convierte P/T a códigos CHL"""
     if contract_type_code == "P":
@@ -536,28 +548,18 @@ def convert_to_chl_code(contract_type_code):
         return "CHL-04"
     else:
         return ""
-
 def map_contract_status_code(emp: dict) -> str:
-    """Mapea el estado del contrato a códigos numéricos:
-    0 = Terminated (tiene end_date)
-    1 = Dormant (inactivo pero sin end_date)  
-    3 = Active (activo y sin end_date)"""
-    job = emp.get("current_job") or {}
-    end_date = job.get("end_date")
-    status = emp.get("status", "").lower()
-   
-    # Si tiene end_date → Terminated
-    if end_date:
+    """Mapea el estado del contrato a c�digos num�ricos usando todos los jobs."""
+    has_open_job, latest_end_date = _job_status_flags(emp)
+    status = str(emp.get("status", "")).lower()
+    is_status_active = status in {"activo", "active", "activa"}
+    if has_open_job or is_status_active:
+        return "1" if status in ["inactivo", "inactive", "suspenso", "suspended"] else "3"
+    if latest_end_date:
         return "0"
-   
-    # Sin end_date pero inactivo → Dormant
     if status in ["inactivo", "inactive", "suspenso", "suspended"]:
         return "1"
-   
-    # Sin end_date y activo → Active (default)
     return "3"
-   
-
 def format_decimal_two_places(value) -> str:
     if value is None:
         return ""
@@ -596,9 +598,7 @@ def handle_null_date(value, default="99991231"):
     if value is None or value == "":
         return default
     return to_yyyymmdd(value) or default
-
 # -------- Mapeo contract_type a código numérico --------
-
 def map_contract_type_status(contract_type_raw):
     """Mapea el tipo de contrato a código numérico"""
     if not contract_type_raw:
@@ -612,7 +612,6 @@ def map_contract_type_status(contract_type_raw):
         return "2"
     else:
         return ""
-
 # -------- Mapeo Management Group a Employee Category --------    
 def map_employee_category(mgmt_group_value):
     """Mapea Management Group a Employee Category"""
@@ -625,8 +624,6 @@ def map_employee_category(mgmt_group_value):
         return "Individual Contributor"
     else:
         return "Management"
-
-
 # -------- Mapea de 1,2 a Sr./Sra. --------
 def map_salutation(val):
     """Convierte el resultado de map_gender a (SR. o SRA.)"""
@@ -638,13 +635,11 @@ def map_salutation(val):
         return "SRA."
     else:
         return ""
-
 def is_valid_date(date_string, min_date="20220801"):
     if not date_string:
         return False
    
     return date_string >= min_date
-
 # -------- Analiza x contratos para saber fecha de ingreso antigua vs contrato actual --------
 def analyze_employee_contracts(emp):
     """
@@ -684,7 +679,6 @@ def analyze_employee_contracts(emp):
             "has_multiple_contracts": len(jobs) > 1
         }
     }
-
 # -------- Columnas de salida --------
 COLS = [
     "Personnel Number","GID","Surname","Name",
@@ -711,10 +705,8 @@ COLS = [
     "Pay Scale Group","Contract Type ","Standard Weekly Hours","Country of Birth","Salutation","Preferred Name","Line Manager",
     "SuccessFactors ID",
 ]
-
 # Columnas para empleados filtrados (incluye motivo de filtro)
 FILTERED_COLS = COLS + ["Filter Reason"]
-
 def find_local_pay_level_strict(emp: dict) -> str:
     '''
     SOLO devuelve 'Local Pay Level' si su longitud > 9 (p. ej. 'CL_CSSOSEROPTL09').
@@ -729,7 +721,6 @@ def find_local_pay_level_strict(emp: dict) -> str:
             return False
         s = str(v).strip()
         return len(s) > 9 and s.upper() != "NOT_APPLICABLE"
-
     def _get_norm_key(dct, target="Local Pay Level"):
         # NBSP (\u00A0) → espacio normal, luego _norm_key
         if not isinstance(dct, dict):
@@ -740,20 +731,17 @@ def find_local_pay_level_strict(emp: dict) -> str:
             if k_norm == wanted:
                 return v
         return None
-
     # 1) current_job.custom_attributes
     job = (emp.get("current_job") or {})
     job_ca = job.get("custom_attributes") or {}
     v = _get_norm_key(job_ca, "Local Pay Level")
     if _is_long_ok(v):
         return str(v).strip()
-
     # 2) emp.custom_attributes
     emp_ca = emp.get("custom_attributes") or {}
     v = _get_norm_key(emp_ca, "Local Pay Level")
     if _is_long_ok(v):
         return str(v).strip()
-
     # 3) recorrer jobs (toma el más reciente por start_date)
     best = ""
     best_date = ""
@@ -766,10 +754,7 @@ def find_local_pay_level_strict(emp: dict) -> str:
                 best, best_date = str(v).strip(), d
             elif not best:
                 best = str(v).strip()
-
     return best
-
-
 def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
     """
     Busca 'Local Pay Level' en TODO el objeto del empleado:
@@ -778,11 +763,9 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
       3) jobs[].custom_attributes['Local Pay Level']        (elige el del job más reciente por start_date)
       4) BÚSQUEDA PROFUNDA: recorre todo el dict/list y junta cualquier 'Local Pay Level' que aparezca en cualquier parte.
          Aplica heurísticas para escoger el mejor: prioriza que empiece con 'CL_' y, en igualdad, la cadena más larga.
-
     Si return_debug=True, además devuelve info de cómo/desde dónde se obtuvo.
     """
     TARGET_KEY = "Local Pay Level"
-
     def _is_valid(v: object) -> bool:
         if v is None:
             return False
@@ -790,7 +773,6 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
         if not s or s.upper() == "NOT_APPLICABLE":
             return False
         return True
-
     def _norm(s: str) -> str:
         # misma normalización que usas en _norm_key, ampliada con NBSP → espacio
         s = "" if s is None else str(s)
@@ -801,9 +783,7 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
         for ch in ("-", "_"):
             s = s.replace(ch, " ")
         return " ".join(s.split())
-
     wanted = _norm(TARGET_KEY)
-
     def _get(dct: dict):
         """Obtiene por clave normalizada (tolera NBSP, guion/underscore, mayúsculas, dobles espacios)."""
         if not isinstance(dct, dict):
@@ -812,23 +792,19 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
             if _norm(str(k)) == wanted:
                 return v
         return None
-
     def to_date(s):
         return to_yyyymmdd(s) if s else ""
-
     # 1) current_job.custom_attributes
     job = emp.get("current_job") or {}
     job_ca = job.get("custom_attributes") or {}
     v = _get(job_ca)
     if _is_valid(v):
         return (str(v).strip(), {"source": "current_job.custom_attributes"}) if return_debug else str(v).strip()
-
     # 2) emp.custom_attributes
     emp_ca = emp.get("custom_attributes") or {}
     v = _get(emp_ca)
     if _is_valid(v):
         return (str(v).strip(), {"source": "emp.custom_attributes"}) if return_debug else str(v).strip()
-
     # 3) jobs[].custom_attributes (elige el más reciente por start_date)
     best = ""
     best_date = ""
@@ -846,7 +822,6 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
                 best_src = {"source": f"jobs[{idx}].custom_attributes", "job_start_date": d}
     if best:
         return (best, best_src) if return_debug else best
-
     # 4) BÚSQUEDA PROFUNDA (recorre todo el objeto)
     candidates = []  # (valor, path_string)
     def walk(obj, path="emp"):
@@ -862,9 +837,7 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
             for i, it in enumerate(obj):
                 walk(it, f"{path}[{i}]")
         # otros tipos: nada
-
     walk(emp)
-
     if candidates:
         # Heurística de selección:
         #  - prioriza que empiece con 'CL_'
@@ -880,12 +853,9 @@ def find_local_pay_level_exhaustive(emp: dict, *, return_debug: bool = False):
         candidates.sort(key=score, reverse=True)
         best_val, best_path = candidates[0]
         return (best_val, {"source": "deep_scan", "path": best_path}) if return_debug else best_val
-
     # Nada encontrado
     return ("", {"source": "none"}) if return_debug else ""
-
 import re
-
 def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
     """
     Devuelve el Local Pay Level de forma robusta.
@@ -896,7 +866,6 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
       4) deep-scan de todo el objeto (clave normalizada)
       5) derivar desde GRIP Position: 'CS-XX-YYY-ZZ09' -> 'CL_CSXXYYYZZ09' (con 'CL_' y sin '-')
       6) regex: primer string que parezca 'CL_' + >=7 chars mayúsculas/dígitos
-
     A diferencia de la versión anterior, ya no exige que el valor tenga una
     longitud mínima; basta con que exista, respetando "NOT_APPLICABLE" como valor
     válido en las fuentes prioritarias.
@@ -906,7 +875,6 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
             return False
         s = str(v).strip()
         return s != ""
-
     def _norm_key(s: str) -> str:
         s = "" if s is None else str(s)
         s = s.replace("\u00A0", " ").lower()  # NBSP → espacio
@@ -915,20 +883,15 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
         for ch in ("-", "_"):
             s = s.replace(ch, " ")
         return " ".join(s.split())
-
     TARGET = _norm_key("Local Pay Level")
-
     def _get_from(dct):
         if not isinstance(dct, dict): return None
         for k,v in dct.items():
             if _norm_key(k) == TARGET:
                 return v
         return None
-
     def _to_date(s): return to_yyyymmdd(s) if s else ""
-
     dbg = {"source": None}
-
     # 1) current_job.custom_attributes
     job = emp.get("current_job") or {}
     job_ca = job.get("custom_attributes") or {}
@@ -936,14 +899,12 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
     if _is_valid(v):
         if return_debug: dbg["source"] = "current_job.custom_attributes"
         return (str(v).strip(), dbg) if return_debug else str(v).strip()
-
     # 2) emp.custom_attributes
     emp_ca = emp.get("custom_attributes") or {}
     v = _get_from(emp_ca)
     if _is_valid(v):
         if return_debug: dbg["source"] = "emp.custom_attributes"
         return (str(v).strip(), dbg) if return_debug else str(v).strip()
-
     # 3) jobs[] más reciente
     best, best_date = "", ""
     best_src = None
@@ -961,7 +922,6 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
     if best:
         if return_debug: dbg["source"] = best_src
         return (best, dbg) if return_debug else best
-
     # 4) deep scan por clave normalizada
     candidates = []
     def walk(obj, path="emp"):
@@ -987,7 +947,6 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
         best_val, best_path = candidates[0]
         if return_debug: dbg.update({"source":"deep_scan", "path": best_path})
         return (best_val, dbg) if return_debug else best_val
-
     # 5) derivar desde GRIP Position → CL_ + (GRIP sin '-')
     grip = (job_ca.get("GRIP Position") or emp_ca.get("GRIP Position") or "").strip()
     if grip:
@@ -995,7 +954,6 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
         if _is_valid(derived):
             if return_debug: dbg["source"] = "derived_from_GRIP"
             return (derived, dbg) if return_debug else derived
-
     # 6) regex: cualquier valor que parezca un LPL
     #    Ej: CL_CSSOSEROPTL09, CL_MFMRMATECTE999, etc.
     REG = re.compile(r"\bCL_[A-Z0-9]{7,}\b")
@@ -1016,12 +974,8 @@ def get_local_pay_level_best(emp: dict, *, return_debug: bool=False):
     if regex_hits:
         if return_debug: dbg["source"] = "regex_scan"
         return (regex_hits[0], dbg) if return_debug else regex_hits[0]
-
     if return_debug: dbg["source"] = "none"
     return ("", dbg) if return_debug else ""
-
-
-
 def build_employee_row(emp, filter_reason=None, *, is_active=False):
     """
     Construye una fila completa para un empleado.
@@ -1030,7 +984,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     ca = emp.get("custom_attributes") or {}
     job = emp.get("current_job") or {}
     job_ca = job.get("custom_attributes") or {}
-
     # Identificación / nombres
     # Obtener RUT y separar dígito verificador para ordenamiento correcto
     dni_raw = (emp.get("dni") or emp.get("document_number","")).replace(".","")
@@ -1047,17 +1000,14 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     s1 = emp.get("surname") or emp.get("last_name","")
     s2 = emp.get("second_surname","")
     surname = " ".join([p for p in [s1, s2] if p]).strip()
-
     # E,F,G,H vacías
     arist_title = (ca.get("Title") or "").strip()
     gender = map_gender(emp.get("gender"))
     dob = to_yyyymmdd(emp.get("date_of_birth") or emp.get("birth_date") or emp.get("birthday"))
     nat1, nat2, nat3 = nationality_codes(emp, ca)
-
     # Educación
     highest_edu = ( get_from_attrs(emp, ["Highest Level of Education","Education Level","Nivel educacional"])
                     or find_any(emp, ["Highest Level of Education","Education Level","Nivel educacional"]) )
-
     # Contratos / horas
     contract_type_raw = ( get_from_attrs(emp, ["Contract Type","Tipo de contrato"], prefer_job=True)
                           or str(job.get("contract_type") or "").strip() )
@@ -1076,11 +1026,15 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
    
     # Standard Work Week: Debe ser igual a contractual weekly working time
     standard_work_week =  contractual_weekly
-
     # Fechas laborales
     contract_analysis = analyze_employee_contracts(emp)
-    service_date = contract_analysis["oldest_start_date"]
-    company_entry_date = contract_analysis["oldest_start_date"]
+    oldest_start_date = contract_analysis["oldest_start_date"]
+    service_date = oldest_start_date
+    company_entry_date = oldest_start_date
+    if company_entry_date and company_entry_date < MIN_ENTRY_DATE:
+        company_entry_date = MIN_ENTRY_DATE
+    if service_date and service_date < MIN_ENTRY_DATE:
+        service_date = MIN_ENTRY_DATE
     date_contract_status = to_yyyymmdd(job.get("start_date"))
    
     entry_reason = ( job.get("entry_reason")
@@ -1097,25 +1051,21 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         prefer_job=True,
         date=True,
     )
-
     company_exit_date = to_yyyymmdd(job.get("end_date"))
     if not company_exit_date:
         if "fijo" in contract_type_clean:
             company_exit_date = contract_finishing_date or "99991231"
         else:
             company_exit_date = "99991231"
-
     # Determinar Exit Reason según reglas
     exit_reason = determine_exit_reason(emp, job, company_exit_date)
     if is_active and "fijo" in contract_type_clean:
         exit_reason = "7"
-
     workforce_type = normalize_workforce_type(emp)
     mgmt_group = get_from_attrs(emp, ["Management Group"], prefer_job=True)
    
     # Date Management Group
     date_mgmt_group = get_from_attrs(emp, ["Date Management group"], prefer_job=True, date=True)
-
    
     are = get_from_attrs(emp, ["ARE"], prefer_job=True)
     loc_short = get_from_attrs(emp, ["Location / Office (short name)"], prefer_job=True) or emp.get("office_short_name","")
@@ -1127,7 +1077,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     tax_country = get_from_attrs(emp, ["Tax Country/Region"], prefer_job=True)
     tax_state = get_from_attrs(emp, ["Tax Country/Region State"], prefer_job=True)
     date_loc_change = company_entry_date
-
     # Direcciones
     addr1 = get_from_attrs(emp, ["Address 1"]) or emp.get("address", "") or emp.get("address_line1","")
     addr2 = get_from_attrs(emp, ["Address 2"]) or emp.get("address_line2","")
@@ -1136,7 +1085,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     state = get_from_attrs(emp, ["Tax Country/Region State"], prefer_job=True)
     country_home = get_from_attrs(emp, ["Country/Region - Home Address"], prefer_job=True)
     postal_code = get_from_attrs(emp, ["Postal Code","Código Postal"], prefer_job=False)
-
     # Compensaciones / estructura
     incentive_payment_type = get_from_attrs(emp, ["Incentive Payment Type"], prefer_job=True)
     cost_center = ( get_from_attrs(emp, ["Cost Center"], prefer_job=True)
@@ -1146,9 +1094,7 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     hr_service_area = get_from_attrs(emp, ["HR Service Area"], prefer_job=True)
     local_pay_level = get_local_pay_level_best(emp)
     date_workfoce_type = company_entry_date
-
     contract_date = company_entry_date
-
     # Base Pay: 2 decimales
     base_pay_raw = get_from_attrs(emp, ["Base Pay","Salario Base","Salary Base"], prefer_job=True)
     base_pay = ""
@@ -1159,7 +1105,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
             base_pay = f"{Decimal(s):.2f}"
         except Exception:
             base_pay = s
-
     # Target Incentive Amount: cambiar 0, null o vacío por NOT_APPLICABLE
     tia_raw = get_from_attrs(emp, ["Target Incentive Amount"], prefer_job=True)
     if tia_raw in ("", None):
@@ -1175,26 +1120,41 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         except (ValueError, TypeError):
             # Si no se puede convertir a float, mantener el valor original
             target_incentive_amount = str(tia_raw).strip()
-
     currency = get_from_attrs(emp, ["Currency"], prefer_job=True) or emp.get("current_job",{}).get("currency_code","")
-
     # Local Job Title desde role.name, solo antes de "/"
     role_name = ((job.get("role") or {}).get("name") or "").strip()
     if role_name:
         local_job_title = role_name.split("/", 1)[0].strip()
     else:
         local_job_title = get_from_attrs(emp, ["Local Job Title"], prefer_job=True)
-
     date_local_job_title = get_from_attrs(emp, ["Date Local Job Title"], prefer_job=True, date=True)
+    if not is_active:
+        # En bajas (interfaz2) Date Local Job Title debe replicar Contract Date (columna BB)
+        date_local_job_title = contract_date
+    if date_local_job_title and date_local_job_title < MIN_ENTRY_DATE:
+        date_local_job_title = MIN_ENTRY_DATE
     depth_structure = get_from_attrs(emp, ["Depth Structure"], prefer_job=True)
     gpm_exit_status = get_from_attrs(emp, ["GPM Exit Status"], prefer_job=True)
     date_base_pay = get_from_attrs(emp, ["Date Base Pay"], prefer_job=True, date=True)
-    # Columnas BI y BK deben reflejar exactamente Date Base Pay (columna BL)
-    date_gpm_status = date_base_pay
-    date_contract_status = date_base_pay
+    emp_status = str(emp.get("status", "")).strip().lower()
+    active_since = to_yyyymmdd(emp.get("active_since"))
+    # BL debe tomar active_since cuando el estado sea activo; si no, usar el valor original
+    if emp_status == "activo" and active_since:
+        date_base_pay = active_since
+    if date_base_pay and date_base_pay < MIN_ENTRY_DATE:
+        date_base_pay = MIN_ENTRY_DATE
+    emp_status = str(emp.get("status", "")).strip().lower()
+    active_since = to_yyyymmdd(emp.get("active_since"))
+    # BI debe tomar active_since cuando el estado sea activo; si no, replica Date Base Pay
+    date_gpm_status = active_since if emp_status == "activo" and active_since else date_base_pay
+    if date_gpm_status and date_gpm_status < MIN_ENTRY_DATE:
+        date_gpm_status = MIN_ENTRY_DATE
+    # BK debe seguir la misma regla que BI
+    date_contract_status = active_since if emp_status == "activo" and active_since else date_base_pay
+    if date_contract_status and date_contract_status < MIN_ENTRY_DATE:
+        date_contract_status = MIN_ENTRY_DATE
     date_target_incentive_amount = get_from_attrs(emp, ["Date Target Incentive Amount"], prefer_job=True, date=True)
     global_cost_center = get_from_attrs(emp, ["Global Cost Center"], prefer_job=True)
-
     # Nombre internacional / otros
     name_international = first_name_first
     surname_international = surname
@@ -1202,10 +1162,9 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     eligibility_comp = get_from_attrs(emp, ["Eligibility for Compensation Planning"], prefer_job=True)
     grip_position = get_from_attrs(emp, ["GRIP Position"], prefer_job=True)
     sps_elig = get_from_attrs(emp, ["SPS_Eligibility"], prefer_job=True)
-
     #Obtener la fecha desde current_job.custom_attributes si existe
-    # La columna BU debe replicar Date Base Pay
-    date_sps_elig = date_base_pay
+    # La columna BU debe replicar Company Entry Date (columna V)
+    date_sps_elig = company_entry_date
    
     total_target_cash_raw = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
     total_target_cash = ""
@@ -1232,9 +1191,12 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         else:
             total_target_cash = ""
     date_total_target_cash = get_from_attrs(emp, ["Date Total Target Cash"], prefer_job=True, date=True)
-
+    # BW: usar active_since si est�� activo, sino el valor original; clamping a MIN_ENTRY_DATE
+    if emp_status == "activo" and active_since:
+        date_total_target_cash = active_since
+    if date_total_target_cash and date_total_target_cash < MIN_ENTRY_DATE:
+        date_total_target_cash = MIN_ENTRY_DATE
     private_email = (emp.get("email") or "").strip()
-
     private_mobile = (
         get_from_attrs(emp, ["Private Mobile Phone Number","Private Phone","Mobile personal","Celular personal"], prefer_job=False)
         or emp.get("personal_mobile") or emp.get("private_mobile") or emp.get("mobile") or emp.get("cellphone") or emp.get("phone") or ""
@@ -1249,7 +1211,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         base_salary_raw = base_wage_val
     base_salary = format_decimal_two_places(base_salary_raw)
     date_base_salary = get_from_attrs(emp, ["Date Base Salary","Base Salary Date"], prefer_job=True, date=True)
-
     fixed_allowances = get_from_attrs(emp, ["Fixed Allowances"], prefer_job=True)
     date_fixed_allowance = get_from_attrs(emp, ["Date Fixed Allowance"], prefer_job=True, date=True)
     job_region = job_ca.get("JobRegion", "")
@@ -1257,6 +1218,11 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     currency_payroll = get_from_attrs(emp, ["Currency – Payroll","Currency - Payroll","Currency Payroll","Currency–Payroll","Currency-Payroll"], prefer_job=True)
     lti_elig = get_from_attrs(emp, ["LTI_Eligibility"], prefer_job=True)
     date_lti_elig = get_from_attrs(emp, ["Date LTI_Eligibility"], prefer_job=True, date=True)
+    if not is_active:
+        # En bajas la columna CH replica Contract Date (columna BB)
+        date_lti_elig = contract_date
+    if date_lti_elig and date_lti_elig < MIN_ENTRY_DATE:
+        date_lti_elig = MIN_ENTRY_DATE
     bank_country = get_from_attrs(emp, ["Bank Country/Region Code","Bank Country/Region"], prefer_job=True)
    
     # Bank Code: buscar primero en custom_attributes, si no existe usar el campo "bank" del empleado
@@ -1285,7 +1251,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     termination_date = last_date_worked
     position = get_from_attrs(emp, ["Position"], prefer_job=True)
     legal_entity = get_from_attrs(emp, ["Legal Entity"], prefer_job=True)
-
     # Campos adicionales
     employee_group = map_contract_type_status(contract_type_raw)
     employee_category = map_employee_category(mgmt_group)
@@ -1295,13 +1260,11 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     pay_scale_type    = str(job_ca.get("Pay Scale Type")     or ca.get("Pay Scale Type")     or "").strip()
     pay_scale_area    = str(job_ca.get("Pay Scale Area")     or ca.get("Pay Scale Area")     or "").strip()
     pay_scale_group = get_from_attrs(emp, ["Pay Scale Group", "Grupo de escala salarial"], prefer_job=True) or ""
-
     # Nuevos campos
     country_of_birth = map_country_of_birth(emp.get("country_code"))
     salutation = map_salutation(emp.get("gender"))
     line_manager = get_from_attrs(emp, ["Line Manager", "Manager Name", "Jefe directo", "Supervisor"], prefer_job=True) or ""
     successfactors_id = ca.get("Codigo SF") or ca.get("CodigoSF") or ca.get("SuccessFactors ID", "")
-
     # Construir la fila base
     row = normalize_row_text({
         "Personnel Number": dni,
@@ -1421,7 +1384,6 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         row["Filter Reason"] = filter_reason
    
     return row
-
 def main():
     # --- pedir token con prioridad env var ---
     auth = os.getenv("BUK_AUTH_TOKEN")
@@ -1430,7 +1392,6 @@ def main():
         while not auth:
             auth = getpass.getpass("El token no puede estar vacío. Inténtalo de nuevo: ").strip()
         print("Token ingresado correctamente.")
-
     # --- sesión http ---
     session = requests.Session()
     retries = Retry(total=5, backoff_factor=0.4, status_forcelist=[429, 502, 503, 504])
@@ -1441,26 +1402,22 @@ def main():
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
     })
-
     # --- ventanas de fechas ---
     now = datetime.now()
     bajas_today = now.strftime("%Y%m%d")
     bajas_cutoff = (now - timedelta(days=30)).strftime("%Y%m%d")
     print(f"Bajas consideradas desde {bajas_cutoff} hasta {bajas_today}.")
-
     state = load_bajas_state()
     last_exported_end_date = str(state.get("last_end_date") or "").strip()
     if last_exported_end_date:
         print(f"Última fecha de baja exportada previamente: {last_exported_end_date}")
     else:
         print("No existe registro previo de bajas exportadas.")
-
     period_open_start, period_open_end = fetch_latest_open_period(session)
     if period_open_start and period_open_end:
         print(f"Período ABIERTO más reciente: {period_open_start} a {period_open_end}")
     else:
         print("No se encontró período 'abierto'. 'interfaz1_apibuk.csv' podría quedar vacío según filtros.")
-
     # --- contadores / progreso ---
     page = 1
     all_rows = []       # interfaz1 (activos válidos dentro de período ABIERTO)
@@ -1470,7 +1427,6 @@ def main():
     processed_global = 0
     expected_global = None  # lo intento leer de payload['pagination']['count']
     max_new_end_date = last_exported_end_date
-
     while True:
         url = f"{BASE}/employees?page_size={PAGE_SIZE}&page={page}"
         try:
@@ -1478,33 +1434,30 @@ def main():
         except requests.RequestException as e:
             print(f"\n Error de red en página {page}: {e}")
             break
-
         if r.status_code != 200:
             print(f"\n Error {r.status_code} en página {page}")
             break
-
         payload = r.json()
         if expected_global is None:
             try:
                 expected_global = int(((payload or {}).get("pagination") or {}).get("count") or 0) or None
             except Exception:
                 expected_global = None
-
         empleados = payload.get("data", payload)
         if not empleados:
             break
-
         rows_activos = []
         added_activos_page = 0
         added_fini_page = 0
         page_total = len(empleados)
-
         print(f"\nProcesando página {page}...")
+
+        # Pre-scan: ruts con job abierto o estado activo
+        rut_with_open = set()
 
         for i, emp in enumerate(empleados, start=1):
             job = emp.get("current_job") or {}
             start_date = to_yyyymmdd(job.get("start_date"))
-            end_date   = to_yyyymmdd(job.get("end_date"))
 
             # progreso en línea (global si hay total, si no por página)
             processed_global += 1
@@ -1516,26 +1469,36 @@ def main():
 
             # Detecta estado
             employee_status = analyze_employee_status(emp)
+            rut_current = _norm_rut(emp)
+            end_date_effective = employee_status.get("end_date")
+            has_null_active_until, _ = _active_until_flags(emp)
 
             # (A) FINIQUITADOS -> interfaz2 si end_date está dentro de la ventana de 30 días
             if employee_status["destination"] == "filtered":
-                if end_date and bajas_cutoff <= end_date <= bajas_today:
-                    if last_exported_end_date and end_date <= last_exported_end_date:
+                if has_null_active_until:
+                    continue
+                if end_date_effective and bajas_cutoff <= end_date_effective <= bajas_today:
+                    if last_exported_end_date and end_date_effective <= last_exported_end_date:
                         continue
                     filtered_rows.append(build_employee_row(emp))
                     added_fini_page += 1
-                    if not max_new_end_date or end_date > max_new_end_date:
-                        max_new_end_date = end_date
+                    if not max_new_end_date or end_date_effective > max_new_end_date:
+                        max_new_end_date = end_date_effective
                 continue  # no evaluar reglas de activos
 
             # (B) ACTIVOS -> interfaz1 si analyze_employee_status indica activo (sin validar período)
             if not employee_status["is_active"]:
                 continue
 
-            # Filtros ≥ 20220801 (los que ya tenías)
+            # Filtros >= 20220801 (los que ya tenías)
             contract_analysis = analyze_employee_contracts(emp)
-            company_entry_date = contract_analysis["oldest_start_date"]
-            service_date = contract_analysis["oldest_start_date"]
+            oldest_start_date = contract_analysis["oldest_start_date"]
+            company_entry_date = oldest_start_date
+            service_date = oldest_start_date
+            if company_entry_date and company_entry_date < MIN_ENTRY_DATE:
+                company_entry_date = MIN_ENTRY_DATE
+            if service_date and service_date < MIN_ENTRY_DATE:
+                service_date = MIN_ENTRY_DATE
             date_contract_status = start_date
             date_sps_elig = start_date
 
@@ -1546,18 +1509,14 @@ def main():
 
             rows_activos.append(build_employee_row(emp, is_active=True))
             added_activos_page += 1
-
         # fin de página
         print("\n  ✔ Página procesada: "
               f"activos agregados = {added_activos_page}, "
               f"finiquitados agregados = {added_fini_page}")
-
         all_rows.extend(rows_activos)
         total_added_activos += added_activos_page
         total_added_fini += added_fini_page
-
         page += 1
-
     # --- CSV interfaz1 (ACTIVOS) ---
     if all_rows:
         df = pd.DataFrame(all_rows, columns=COLS)
@@ -1586,7 +1545,6 @@ def main():
         print(f"\n Guardado {OUT_CSV_SEMI} con {len(df)} registros.")
     else:
         print("\n No se agregaron registros a interfaz1_apibuk.csv.")
-
     # --- CSV interfaz2 (FINIQUITADOS en período CERRADO) ---
     df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
     if not df_filtered.empty:
@@ -1615,13 +1573,11 @@ def main():
         print("No se detectaron bajas en el rango; se generara archivo vacio.")
     df_filtered.to_csv(OUT_CSV_FILTERED, index=False, sep=";", encoding="utf-8")
     print(f"Guardado {OUT_CSV_FILTERED} con {len(df_filtered)} registros.")
-
     if max_new_end_date and max_new_end_date != last_exported_end_date:
         save_bajas_state(max_new_end_date)
         print(f"Estado de bajas actualizado hasta {max_new_end_date}.")
     elif not filtered_rows and last_exported_end_date:
         print("No se detectaron bajas nuevas desde la última ejecución.")
-
     # --- resumen final ---
     print("\n===== RESUMEN =====")
     print(f"Activos añadidos a interfaz1: {total_added_activos}")
@@ -1630,9 +1586,8 @@ def main():
         print(f"Total empleados vistos: {processed_global}")
     else:
         print(f"Total empleados vistos: {processed_global}")
-
     if os.name == "nt" and not sys.stdout.isatty():
         input("Presiona ENTER para cerrar...")
-
 if __name__ == "__main__":
     main()
+
