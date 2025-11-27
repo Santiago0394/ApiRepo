@@ -1210,9 +1210,9 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         else:
             total_target_cash = ""
     date_total_target_cash = get_from_attrs(emp, ["Date Total Target Cash"], prefer_job=True, date=True)
-    # BW: usar active_since si est�� activo, sino el valor original; clamping a MIN_ENTRY_DATE
-    if emp_status == "activo" and active_since:
-        date_total_target_cash = active_since
+    # BW: usar active_since m��s reciente; si no hay, usar el valor original; clamping a MIN_ENTRY_DATE
+    if active_since_latest:
+        date_total_target_cash = active_since_latest
     if date_total_target_cash and date_total_target_cash < MIN_ENTRY_DATE:
         date_total_target_cash = MIN_ENTRY_DATE
     private_email = (emp.get("email") or "").strip()
