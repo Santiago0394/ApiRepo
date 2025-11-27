@@ -1520,6 +1520,8 @@ def main():
     # --- CSV interfaz1 (ACTIVOS) ---
     if all_rows:
         df = pd.DataFrame(all_rows, columns=COLS)
+        # Evitar duplicados por número de persona
+        df = df.drop_duplicates(subset=["Personnel Number"], keep="first")
         # Extraer SOLO la parte numérica del RUT (sin dígito verificador) para ordenar
         def extract_rut_number(rut_str):
             rut_str = str(rut_str).strip()
@@ -1548,6 +1550,7 @@ def main():
     # --- CSV interfaz2 (FINIQUITADOS en período CERRADO) ---
     df_filtered = pd.DataFrame(filtered_rows, columns=COLS)
     if not df_filtered.empty:
+        df_filtered = df_filtered.drop_duplicates(subset=["Personnel Number"], keep="first")
         # Extraer SOLO la parte numérica del RUT (sin dígito verificador) para ordenar
         def extract_rut_number(rut_str):
             rut_str = str(rut_str).strip()
