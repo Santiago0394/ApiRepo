@@ -270,6 +270,26 @@ def _active_until_flags(emp: dict) -> tuple[bool, str]:
         if "active_until" in jb:
             _consider(jb.get("active_until"))
     return has_null, latest_active_until
+
+def _latest_active_since(emp: dict) -> str:
+    """
+    Devuelve el active_since más reciente encontrado en el empleado y sus jobs.
+    """
+    latest = ""
+    def _consider(val):
+        nonlocal latest
+        parsed = to_yyyymmdd(val)
+        if parsed and parsed > latest:
+            latest = parsed
+    if "active_since" in emp:
+        _consider(emp.get("active_since"))
+    job = emp.get("current_job") or {}
+    if "active_since" in job:
+        _consider(job.get("active_since"))
+    for jb in _collect_jobs(emp):
+        if isinstance(jb, dict) and "active_since" in jb:
+            _consider(jb.get("active_since"))
+    return latest
  
 def _norm_rut(emp: dict) -> str:
     """Normaliza rut/document_number sin puntos ni guiones para comparar duplicados."""
@@ -1143,10 +1163,9 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         date_base_pay = active_since
     if date_base_pay and date_base_pay < MIN_ENTRY_DATE:
         date_base_pay = MIN_ENTRY_DATE
-    emp_status = str(emp.get("status", "")).strip().lower()
-    active_since = to_yyyymmdd(emp.get("active_since"))
-    # BI: priorizar active_since si existe (mismo criterio que activos), de lo contrario usar Date Base Pay
-    date_gpm_status = active_since if active_since else date_base_pay
+    # BI: usar el active_since más reciente encontrado; si no hay, caer en Date Base Pay
+    active_since_latest = _latest_active_since(emp)
+    date_gpm_status = active_since_latest if active_since_latest else date_base_pay
     if date_gpm_status and date_gpm_status < MIN_ENTRY_DATE:
         date_gpm_status = MIN_ENTRY_DATE
     # BK debe seguir la misma regla que BI
