@@ -1158,18 +1158,18 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     date_base_pay = get_from_attrs(emp, ["Date Base Pay"], prefer_job=True, date=True)
     emp_status = str(emp.get("status", "")).strip().lower()
     active_since = to_yyyymmdd(emp.get("active_since"))
-    # BL debe tomar active_since cuando el estado sea activo; si no, usar el valor original
-    if emp_status == "activo" and active_since:
-        date_base_pay = active_since
+    active_since_latest = _latest_active_since(emp)
+    # BL: usar el active_since más reciente; si no hay, conservar el valor original
+    if active_since_latest:
+        date_base_pay = active_since_latest
     if date_base_pay and date_base_pay < MIN_ENTRY_DATE:
         date_base_pay = MIN_ENTRY_DATE
     # BI: usar el active_since más reciente encontrado; si no hay, caer en Date Base Pay
-    active_since_latest = _latest_active_since(emp)
     date_gpm_status = active_since_latest if active_since_latest else date_base_pay
     if date_gpm_status and date_gpm_status < MIN_ENTRY_DATE:
         date_gpm_status = MIN_ENTRY_DATE
-    # BK debe seguir la misma regla que BI
-    date_contract_status = active_since if emp_status == "activo" and active_since else date_base_pay
+    # BK: usar el mismo criterio de active_since más reciente; si no hay, usar Date Base Pay
+    date_contract_status = active_since_latest if active_since_latest else date_base_pay
     if date_contract_status and date_contract_status < MIN_ENTRY_DATE:
         date_contract_status = MIN_ENTRY_DATE
     date_target_incentive_amount = get_from_attrs(emp, ["Date Target Incentive Amount"], prefer_job=True, date=True)
