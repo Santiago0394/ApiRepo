@@ -1403,10 +1403,10 @@ def main():
         "Connection": "keep-alive",
     })
     # --- ventanas de fechas ---
-    now = datetime.now()
-    bajas_today = now.strftime("%Y%m%d")
-    bajas_cutoff = (now - timedelta(days=30)).strftime("%Y%m%d")
-    print(f"Bajas consideradas desde {bajas_cutoff} hasta {bajas_today}.")
+    today = datetime.now().date()
+    bajas_end = (today - timedelta(days=1)).strftime("%Y%m%d")        # excluye el día de hoy
+    bajas_cutoff = (today - timedelta(days=31)).strftime("%Y%m%d")    # 30 días completos hacia atrás desde ayer (delta = 30)
+    print(f"Bajas consideradas desde {bajas_cutoff} hasta {bajas_end}")
     state = load_bajas_state()
     last_exported_end_date = str(state.get("last_end_date") or "").strip()
     if last_exported_end_date:
@@ -1477,7 +1477,7 @@ def main():
             if employee_status["destination"] == "filtered":
                 if has_null_active_until:
                     continue
-                if end_date_effective and bajas_cutoff <= end_date_effective <= bajas_today:
+                if end_date_effective and bajas_cutoff <= end_date_effective <= bajas_end:
                     if last_exported_end_date and end_date_effective <= last_exported_end_date:
                         continue
                     filtered_rows.append(build_employee_row(emp))
