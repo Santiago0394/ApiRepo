@@ -1145,8 +1145,8 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         date_base_pay = MIN_ENTRY_DATE
     emp_status = str(emp.get("status", "")).strip().lower()
     active_since = to_yyyymmdd(emp.get("active_since"))
-    # BI debe tomar active_since cuando el estado sea activo; si no, replica Date Base Pay
-    date_gpm_status = active_since if emp_status == "activo" and active_since else date_base_pay
+    # BI: priorizar active_since si existe (mismo criterio que activos), de lo contrario usar Date Base Pay
+    date_gpm_status = active_since if active_since else date_base_pay
     if date_gpm_status and date_gpm_status < MIN_ENTRY_DATE:
         date_gpm_status = MIN_ENTRY_DATE
     # BK debe seguir la misma regla que BI
@@ -1452,8 +1452,11 @@ def main():
         page_total = len(empleados)
         print(f"\nProcesando página {page}...")
 
-        # Pre-scan: ruts con job abierto o estado activo
-        rut_with_open = set()
+        # Pre-scan: ruts que tengan cualquier active_until null (no deben ir a bajas)
+        rut_with_null_active_until = set()
+        for emp_pre in empleados:
+            if _active_until_flags(emp_pre)[0]:
+                rut_with_null_active_until.add(_norm_rut(emp_pre))
 
         for i, emp in enumerate(empleados, start=1):
             job = emp.get("current_job") or {}
@@ -1475,6 +1478,8 @@ def main():
 
             # (A) FINIQUITADOS -> interfaz2 si end_date está dentro de la ventana de 30 días
             if employee_status["destination"] == "filtered":
+                if rut_current in rut_with_null_active_until:
+                    continue
                 if has_null_active_until:
                     continue
                 if end_date_effective and bajas_cutoff <= end_date_effective <= bajas_end:
