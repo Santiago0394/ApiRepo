@@ -1246,10 +1246,8 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     finance_company_code = get_from_attrs(emp, ["Finance Company Code"], prefer_job=True)
     currency_payroll = get_from_attrs(emp, ["Currency – Payroll","Currency - Payroll","Currency Payroll","Currency–Payroll","Currency-Payroll"], prefer_job=True)
     lti_elig = get_from_attrs(emp, ["LTI_Eligibility"], prefer_job=True)
-    date_lti_elig = get_from_attrs(emp, ["Date LTI_Eligibility"], prefer_job=True, date=True)
-    if not is_active:
-        # En bajas la columna CH replica Contract Date (columna BB)
-        date_lti_elig = contract_date
+    # CH: alinear con Date GPM Status (columna BI)
+    date_lti_elig = date_gpm_status
     if date_lti_elig and date_lti_elig < MIN_ENTRY_DATE:
         date_lti_elig = MIN_ENTRY_DATE
     bank_country = get_from_attrs(emp, ["Bank Country/Region Code","Bank Country/Region"], prefer_job=True)
