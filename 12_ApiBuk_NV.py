@@ -1174,6 +1174,7 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     date_loc_change = date_gpm_status
     date_workfoce_type = date_gpm_status
     contract_date = date_gpm_status
+    date_local_job_title = date_gpm_status
     if not is_active:
         # Alinear Date Local Job Title con Contract Date final (col BB) en bajas
         date_local_job_title = contract_date
@@ -1191,8 +1192,8 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     grip_position = get_from_attrs(emp, ["GRIP Position"], prefer_job=True)
     sps_elig = get_from_attrs(emp, ["SPS_Eligibility"], prefer_job=True)
     #Obtener la fecha desde current_job.custom_attributes si existe
-    # La columna BU debe replicar Company Entry Date (columna V)
-    date_sps_elig = company_entry_date_column
+    # La columna BU debe usar el mismo criterio que Date GPM Status (columna BI)
+    date_sps_elig = date_gpm_status
    
     total_target_cash_raw = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
     total_target_cash = ""
