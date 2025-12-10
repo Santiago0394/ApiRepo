@@ -1113,6 +1113,7 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     country_region = get_from_attrs(emp, ["Country/Region Sub Entity", "Country/Region"], prefer_job=True) or emp.get("country","")
     hr_service_area = get_from_attrs(emp, ["HR Service Area"], prefer_job=True)
     local_pay_level = get_local_pay_level_best(emp)
+    # Inicializar con la fecha de entrada para evitar referencias sin asignar
     date_workfoce_type = company_entry_date
     contract_date = company_entry_date
     # Base Pay: 2 decimales
@@ -1168,6 +1169,14 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     date_gpm_status = active_since_latest if active_since_latest else date_base_pay
     if date_gpm_status and date_gpm_status < MIN_ENTRY_DATE:
         date_gpm_status = MIN_ENTRY_DATE
+    service_date_column = date_gpm_status
+    company_entry_date_column = date_gpm_status
+    date_loc_change = date_gpm_status
+    date_workfoce_type = date_gpm_status
+    contract_date = date_gpm_status
+    if not is_active:
+        # Alinear Date Local Job Title con Contract Date final (col BB) en bajas
+        date_local_job_title = contract_date
     # BK: usar el mismo criterio de active_since más reciente; si no hay, usar Date Base Pay
     date_contract_status = active_since_latest if active_since_latest else date_base_pay
     if date_contract_status and date_contract_status < MIN_ENTRY_DATE:
@@ -1183,7 +1192,7 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
     sps_elig = get_from_attrs(emp, ["SPS_Eligibility"], prefer_job=True)
     #Obtener la fecha desde current_job.custom_attributes si existe
     # La columna BU debe replicar Company Entry Date (columna V)
-    date_sps_elig = company_entry_date
+    date_sps_elig = company_entry_date_column
    
     total_target_cash_raw = get_from_attrs(emp, ["Total Target Cash"], prefer_job=True)
     total_target_cash = ""
@@ -1307,8 +1316,8 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         "Contract Status": contract_status,
         "Contractual Weekly Working Time": contractual_weekly,
         "Standard Work Week": standard_work_week,
-        "Company Entry Date": company_entry_date,
-        "Service Date": service_date,
+        "Company Entry Date": company_entry_date_column,
+        "Service Date": service_date_column,
         "Entry Reason": entry_reason,
         "Company Exit Date": company_exit_date,
         "Exit Reason": exit_reason,
@@ -1617,4 +1626,3 @@ def main():
         input("Presiona ENTER para cerrar...")
 if __name__ == "__main__":
     main()
-
