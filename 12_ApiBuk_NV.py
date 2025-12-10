@@ -1276,6 +1276,8 @@ def build_employee_row(emp, filter_reason=None, *, is_active=False):
         termination_date = last_date_worked
     last_date_worked = add_one_day_yyyymmdd(last_date_worked)
     termination_date = last_date_worked
+    # Alinear Company Exit Date con la misma lógica que Termination Date
+    company_exit_date = termination_date
     position = get_from_attrs(emp, ["Position"], prefer_job=True)
     legal_entity = get_from_attrs(emp, ["Legal Entity"], prefer_job=True)
     # Campos adicionales
